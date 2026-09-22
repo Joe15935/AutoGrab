@@ -171,10 +171,14 @@ Final commands and observed results:
   columns, and human-pause email assumed every context was DRY RUN. Assertions
   now check preservation of every old field plus null new fields, and accurate
   uncertain-order/no-payment wording. Both passed the final full run.
-- Final source and unpacked wheel/sdist/source ZIP: secret scan and privacy review
-  required before publication; final scan evidence accompanies the release output.
-- Public Git ancestry and author/committer metadata: reviewed separately from
-  private development refs. Only public `main` and `v0.5.0-alpha` may be pushed.
+- Working source (171 files), unpacked wheel (59 files), sdist (170 files)
+  and source ZIP (171 files): **PASS** secret scan and privacy review. Only the
+  exact public extension key, empty placeholder and explicit synthetic test
+  literals were accepted; no unresolved finding. Wheel import/version: **PASS**.
+- Reachable public Git history and author/committer metadata: **PASS**, reviewed
+  separately from private development refs. Only public `main` and
+  `v0.5.0-alpha` are published. Downloaded release assets must match the scanned
+  local SHA256 digests; verification evidence accompanies the release output.
 
 Changes by area (all paths repository-relative):
 
