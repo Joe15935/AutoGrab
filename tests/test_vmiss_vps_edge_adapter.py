@@ -71,6 +71,31 @@ class PublicEdgeReaderTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(result["code"], expected_code)
                     self.assertEqual(self.requests, [])
 
+    async def test_official_vmiss_store_entry_and_unknown_period_remain_readonly(self):
+        for case in CASES:
+            with self.subTest(provider=case[0]):
+                name, expected = await self.load(case)
+                unknown = {**expected, "period": "unknown", "currency": None, "cents": None}
+                self.assertEqual((await self.call(name, "detectPage", unknown))["stage"], "PRODUCT")
+                self.assertTrue((await self.call(name, "verifyProduct", unknown))["ok"])
+                self.assertEqual((await self.call(name, "addToCart", unknown))["action"], "NONE")
+                self.assertEqual(self.requests, [])
+        provider, name, fixture, expected = CASES[1]
+        entry = {**expected, "url": "https://app.vmiss.com/store"}
+        await self.load((provider, name, fixture, entry), '<h1>Store</h1>')
+        self.assertEqual((await self.call(name, "detectPage", entry))["stage"], "PRODUCT")
+        self.assertFalse((await self.call(name, "verifyProduct", entry))["ok"])
+        self.assertEqual(self.requests, [])
+
+    async def test_observed_vmiss_rate_limit_never_becomes_normal_returned(self):
+        html = (ROOT / "tests/fixtures/vmiss-rate-limited.public.html").read_text()
+        name, expected = await self.load(CASES[1], html)
+        for method in ("detectPage", "detectChallenge", "verifyProduct", "addToCart"):
+            result = await self.call(name, method, expected)
+            self.assertEqual((result["ok"], result["code"], result["stage"], result["challenge"]),
+                             (False, "RATE_LIMITED", "UNKNOWN", "UNKNOWN"))
+        self.assertEqual(self.requests, [])
+
 
 if __name__ == "__main__":
     unittest.main()

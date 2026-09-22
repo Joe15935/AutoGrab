@@ -101,3 +101,14 @@ class MultiDispatchTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(stored.summary()["known_count"],0)
                 self.assertEqual(stored.list_events(),[])
             self.notifier.send_event.assert_not_awaited()
+
+    async def test_observed_http_denial_pauses_without_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config(root=Path(directory)); config.prepare()
+            provider = self.provider(replace(self.product, provider="vmiss"))
+            provider.discover_products = AsyncMock(side_effect=AutoGrabError("HTTP_403"))
+            args = SimpleNamespace(command="monitor", provider="vmiss", once=False, prepare_checkout=False)
+            with patch("autograb.multi_cli.create_provider", return_value=provider), patch("autograb.multi_cli.EmailNotifier", return_value=self.notifier), patch("autograb.multi_cli.asyncio.sleep", side_effect=AssertionError("blocked provider retried")), redirect_stdout(StringIO()):
+                self.assertEqual(await run_multi(args, config), 2)
+            self.assertEqual(provider.discover_products.await_count, 1)
+            self.notifier.send_event.assert_not_awaited()

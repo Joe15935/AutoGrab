@@ -39,6 +39,12 @@ def parser():
     simulated.add_argument("provider", choices=["bandwagon"])
     simulated.add_argument("event", choices=["new-product", "restock"])
     simulated.add_argument("--product-id", default="87")
+    from autograb.providers.apple import REGIONS
+    for name in ("apple-configure", "apple-catalog-refresh"):
+        command = commands.add_parser(name)
+        command.add_argument("--region", choices=list(REGIONS))
+        if name == "apple-catalog-refresh":
+            command.add_argument("--category", action="append", help="Official category such as iphone; defaults to the configured catalog scope")
     from autograb.phase2_cli import register_commands
     register_commands(commands)
     from autograb.edge_cli import register_commands as register_edge_commands
@@ -60,7 +66,7 @@ async def run(args, config):
     notifier = EmailNotifier(load_setup(config.root, base=config.smtp))
     with ProcessLock(config.root / "data/autograb.lock"), Store(config.root / "data/autograb.sqlite3") as store:
         recovered = store.recover_interrupted()
-        log.write("START", version="0.3.0a0", database="OK", email="CONFIGURED" if notifier.configured else "NOT_CONFIGURED", recovered_events=recovered)
+        log.write("START", version="0.4.0a0", database="OK", email="CONFIGURED" if notifier.configured else "NOT_CONFIGURED", recovered_events=recovered)
         if args.command in {"status", "history"}:
             print(json.dumps(store.summary() if args.command == "status" else store.list_events(), ensure_ascii=False, indent=2))
             return 0
@@ -176,6 +182,9 @@ def main():
     try:
         config = Config.load(args.root.resolve())
         config.prepare()
+        if args.command in {"apple-configure", "apple-catalog-refresh"}:
+            from autograb.apple_cli import run_apple
+            return asyncio.run(run_apple(args, config))
         # All supported authenticated entry points migrate to the ordinary Edge
         # Companion. Legacy helpers remain only for historical regression tests.
         from autograb.edge_cli import handles, run_edge

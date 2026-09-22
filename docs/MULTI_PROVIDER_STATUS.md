@@ -1,100 +1,160 @@
-# Multi-provider alpha: evidence and limitations
+# Provider closure alpha: evidence and limits
 
-Observed 2026-09-22. **Integration PARTIAL; no claim that all five checkouts are ready.**
-All real operations stopped before final order submission. LIVE OFF, ARM OFF.
+Observed 2026-09-22. **PARTIAL. Experimental alpha; no order or payment creation.**
+LIVE OFF, ARM OFF. Levels identify actual observed capability, not a promise that
+all automated adapters support the same flow.
 
-| Provider | Discovery | Baseline | Opportunity classification | Normal Edge | Cart | Checkout |
-|---|---|---|---|---|---|---|
-| BandwagonHost | PASS, official catalogue | PASS, 48 existing products | PASS, regression-verified transitions | PASS, prior same-profile companion flow | PASS, prior real flow | PASS, prior signed-in real flow |
-| DMIT | PASS in ordinary Edge; HTTP challenge | PASS, 91 public PID records | PASS in regression; automatic HTTP monitoring blocked | Real product/configuration reached; companion read-only | UNVERIFIED, configuration Continue outcome uncertain | UNVERIFIED |
-| VMISS | BLOCKED, official store security verification | NOT ESTABLISHED | Parser/classifier tests only | USER ACTION REQUIRED | UNVERIFIED | UNVERIFIED |
-| V.PS | PASS, six official marketing categories | PASS, 66 unique plans | PASS in regression; marketing stock UNKNOWN | PASS: shared companion read-only handoff; real HostBill plan UI observed | UNVERIFIED | UNVERIFIED |
-| Apple | PASS for official configured pickup research sample | User targets NOT CONFIGURED | Pickup transition regression PASS | Experimental read-only routing | UNVERIFIED | UNVERIFIED |
+| Provider | Level | Real-site result |
+|---|---|---|
+| BandwagonHost | L5 | Prior signed-in checkout PASS; original 48 ordinary products retained; not rerun this sprint |
+| DMIT | L5 manual flow | Exact PID 266 cart survived refresh; signed-in checkout PASS; companion mutation remains disabled |
+| VMISS | L0 partial | Official store identified; observed Error 1015 rate limit; no live product baseline or checkout |
+| V.PS | L3 | 66 public plans; normal Edge page verified; **ORDER NOW = REAL ORDER CREATION**, so no submission |
+| Apple | L3 | Current official catalogue, target wizard and research pickup inventory PASS; Bag/Checkout blocked |
 
-“Opportunity PASS” above is code-transition validation, not evidence that a new
-commercial opportunity occurred during this run. Baseline initialization sent
-no opportunity or purchase trigger. The Bandwagon catalogue's current 48 items
-remain ordinary baseline inventory despite promotional words or annual billing.
+L0 discovery, L1 baseline, L2 opportunity detection, L3 normal Edge opening,
+L4 cart, L5 checkout. L6 order and L7 payment readiness are outside this release.
+VMISS L0 partial means its official entry is known, not that live inventory was
+retrieved. L2 transitions are regression-verified; no artificial restock or launch
+is described as a real opportunity.
 
-## Actual site differences
+## DMIT
 
-- Bandwagon uses its existing custom catalogue and classic WHMCS cart. Its prior
-  observed Product → Configuration → Cart → signed-in Checkout path is retained.
-  No additional ordinary-product purchase was made in this sprint.
-- DMIT `/cart.php` uses `dmit_cart_2020`, with `.cart-products-item[gid]`,
-  `.cart-products-box[pid]`, `.cart-products-title`, `.cart-products-price`, and
-  `.none-stock`. The normal page contains 91 products across filtered regions;
-  61 had explicit disabled/out-of-stock markers and 30 were selectable. A first
-  scan recorded all 91. Official public JavaScript confirms that `.none-stock`
-  excludes selection and only a selected priced product enables Continue.
-  A test item reached `cart.php?a=confproduct&i=0`; `frmConfigureProduct` submits
-  through the merchant's AJAX configuration handler. Continue was clicked once
-  and remained pending. A fresh read-only Cart page then explicitly showed an
-  empty basket. Its uncertain configuration request is preserved, never retried.
-- VMISS's current official website links `app.vmiss.com/store`. Anonymous HTTP
-  received 403; ordinary Edge also encountered security verification. The
-  Lagom-style fixture remains explicitly synthetic pending current live evidence.
-- V.PS links to `vps.hosting`, whose routes are HostBill-style `cmd=cart`,
-  `/products/` and `/cart/<category>/`, not `cart.php`. Six marketing categories
-  yielded 66 IDs. Ordinary Edge showed all six Tokyo cloud plans out of stock;
-  Amsterdam displayed configurable plans and a billing selector. The observed
-  Order button calls `submitOrder()`; the linked official `onestep_cloud_2019`
-  script appends `make=order` and submits `#cartdetails`. That is an order boundary,
-  not a verified Add to Cart action, so it was deliberately not clicked. These limited
-  observations do not overwrite the complete marketing baseline's UNKNOWN stock.
-- Apple CN's current public `shop/retail/pickup-message` endpoint returned an
-  exact SKU/store match with `pickupDisplay=available`. The research SKU and store
-  were first obtained from official Apple pages. They were not installed as a
-  user target. A delivery endpoint request returned 541; that route was stopped.
-  No future product, release date or preorder opening was inferred.
-  Adding an existing SKU to local configuration is recorded as a monitored
-  target, not a new launch. Dynamic Apple SKU discovery and preorder/order-open
-  detection are not implemented in this alpha.
+- Baseline: 91 existing public PID records; the prior 30-selectable/61-disabled
+  observation remains a dated snapshot, not a current stock guarantee.
+- Configuration: real `dmit_cart_2020` page, selected PID, monthly billing and
+  price observed. The old uncertain request remains preserved and was not retried.
+- A new explicitly authorized ordinary-product DRY RUN used a separate intent.
+  Its configuration POST to `/cart.php` returned HTTP 200 with an explicit
+  invalid-Linux-hostname response. Auto-generated form data is not automatically
+  valid. A corrected research hostname was entered through the normal UI, visibly
+  confirmed, then the corrected configuration was submitted once.
+- Cart **PASS**: the observed `cart.php?a=add&pid=266` link led to configuration
+  index 0, then the cart contained HKG.AS3.Pro.STARTER, USD 79.90, monthly. The
+  same product and price remained after an explicit cart refresh. PID identity
+  is bound by this observed sequence; the cart itself did not expose a PID field.
+- Checkout **PASS**: the observed Checkout link opened `cart.php?a=checkout`,
+  displaying signed-in account controls, Personal Information, Payment Details,
+  total USD 79.90, an unchecked terms box and **Complete Order**. No terms were
+  accepted and no final order was submitted. Account/form values were not saved
+  in any public artifact.
+- Historical failed XHRs returned 403. Their individual operations cannot be
+  reconstructed from retained resource metadata, and 403 alone does not prove
+  Cloudflare or a human challenge.
+- Official Continue code prevents native submit, sends `ajax=1&a=confproduct`
+  through WHMCS's AJAX client, displays a nonempty validation response, or follows
+  `cart.php?a=confdomains` on empty success. It lacks a failure callback to restore
+  the Continue spinner. Configuration result uncertainty is not permission to retry.
+- The adapter now distinguishes ordinary configuration, pending Continue and
+  visible validation failure. Fixed codes contain no form values or response body.
+  These pauses cannot passively become a successful resume while still blocked.
+- This is a normal Edge **manual acceptance flow**, not a certified automatic
+  checkout adapter. Read-only page-stage detection does not prove cart identity.
+  Automatic cart/configuration/order mutation stays off; the old PID 265
+  uncertain intent remains separate and was never retried.
 
-## Scope of the alpha
+## VMISS
 
-The five providers share Core, SQLite, durable events, email and Native Messaging.
-The installed ordinary-Edge extension and Core both reported version 0.3.0.
-A real V.PS OPEN_PRODUCT command passed through Native Messaging, opened its
-public Cloud page, and returned OPENED without a cart action. After an explicit
-local cancellation, Core received the cancellation acknowledgement and safely
-released only this proven read-only intent. All older cart/uncertainty records
-were retained.
-Provider+product identity prevents cross-merchant collisions. Explicit Edge tests
-are not restock opportunities. Unknown prices are preserved and allow read-only
-page handoff, not guessed amounts. Only the previously verified Bandwagon adapter
-has enabled DOM mutations; all new adapters currently reject them in both the
-content script and controller. This is a material remaining implementation limit.
+- Official store: [app.vmiss.com/store](https://app.vmiss.com/store), linked by
+  the current official website.
+- The existing normal Edge task page displayed **Error 1015 / You are being rate
+  limited**. It described a temporary denial by the site owner. The page timestamp
+  was 10:30 UTC; it was inspected later without refreshing the blocked page.
+- This is a rate limit, not a CAPTCHA which the agent or user can simply click.
+  No bypass, repeated request, cookie export or alternate browser was attempted.
+- Parser and read-only adapter remain experimental. `/store` entry and unknown
+  billing-period handling were fixed. HTTP 429 / observed 1015 are RATE_LIMITED;
+  plain 403 remains HTTP_403; actual human-challenge markers retain their own code.
+- The existing Edge tab/session and intent-resume controls are retained. Resume
+  needs fresh normal-page evidence and an explicit operator action after access
+  is restored. A denied/limited page never qualifies as normal-page evidence.
+- Baseline, product configuration, cart and checkout remain UNVERIFIED.
 
-SQLite migration retains old rows, extra columns, indexes, triggers, views and
-foreign-key links. The original local data and SMTP setup are private and are
-not part of an installation or public release. Public releases start with an
-empty user-owned database.
+## V.PS: exact order boundary
 
-NodeSeek is optional auxiliary intelligence: public RSS → unverified signal →
-allowlisted official URL candidate. It cannot create an event or order directly.
-Automatic RSS-to-provider scheduling is not yet enabled.
+**ORDER NOW = REAL ORDER CREATION** for the observed current one-step portal.
+This is a verified request semantic, not evidence that a request was sent.
 
-## Targeted reuse decision
+The [V.PS ordering guide](https://v.ps/docs/order-a-vps/) describes an intermediate
+cart. The current Amsterdam portal instead loads the official
+[`onestep_cloud_2019` script](https://vps.hosting/templates/orderpages/onestep_cloud_2019/js/script.js).
+Its `submitOrder()` appends `make=order` and calls native form submission.
+Current normal Edge inspection found `#cartdetails` method POST, empty action
+(current cart URL), `make=order`, no inline submit handler, no registered submit
+listener and an unmodified native `HTMLFormElement.submit`. The Order button's
+handler was `submitOrder();return false;`.
 
-The maintained Apple watcher helps identify the current endpoint, but adding its
-Rust/Tauri application would duplicate the existing runtime. Standalone WHMCS
-monitors supply URL/stock behavior but not the verified normal-Edge lifecycle.
-The selected route is independent thin provider adapters, preserving upstream
-interfaces and existing Core. No production dependency was added. See
-[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) for licenses and decisions.
+The [HostBill developer documentation](https://dev.hostbillapp.com/orderpages/)
+explicitly defines this one-step submission as immediate order creation. The
+[official order-page description](https://hostbillapp.com/feature/2019-onestep-orderpage/)
+also describes checkout within that single flow. These combined facts establish
+the boundary; the function name alone would not.
 
-## Acceptance commands
+The button was not clicked, intercepted or submitted. No response, invoice or
+payment was generated to test this conclusion. A submit-event preventDefault
+alone would not reliably block native `form.submit()`, so no such unsafe probe
+was used. The adapter stays read-only. Separate cart/checkout remain UNVERIFIED.
 
-```sh
-./test.sh
-node --test edge-extension/tests/*.test.mjs
-uv build
-gitleaks dir --config .gitleaks.toml --redact
-gitleaks git --config .gitleaks.toml --redact
-```
+The existing 66-plan marketing baseline remains normal inventory, including
+existing Nano/Mini annual plans. Public prices and purchase links do not prove
+stock. New IDs, families, locations and yearly variants are compared after that
+baseline; restock requires an explicit inventory observation.
 
-Run source and history scans on the exact public staging repository, not the
-private runtime checkout. Check commit author metadata separately; secret
-scanners are not personal-data scanners. Only the exact public extension key is
-allowlisted. Archive/wheel contents also require review.
+## Apple
+
+- **Catalog discovery PASS for complete CN/iPhone scope:** current `/store` and
+  purchase pages yielded 6 families and 73 exact SKUs. No future model-name table
+  or inferred SKU expansion is used. Minimal iPad Pro and Mac mini samples were
+  also parsed; complete other categories/regions are not live-certified.
+- **Target wizard PASS:** a real `apple-configure --region cn` invocation selected
+  iPhone 16 / 128 GB / black / no carrier / Nanjing East store R359 from official
+  choices. The user never needed to supply SKU `MYEV3CH/A`.
+- **Pickup inventory PASS:** that exact research target returned AVAILABLE and
+  fresh=true from the current official `/shop/retail/pickup-message` endpoint.
+- **First baseline PASS:** 73 catalogue products, zero opportunities. The research
+  target was saved only in a separate local acceptance root, not installed as the
+  user's formal preferences. A clearly marked DRY RUN test email was SMTP_ACCEPTED;
+  inbox delivery is not verified.
+- **Three-state behavior:** explicit available / sold-out observations map to
+  AVAILABLE / SOLD_OUT; blocked, rate-limited, failed, stale or changed-schema
+  observations stay UNKNOWN. Last trusted store history is preserved for later
+  comparison, not presented as a fresh successful observation.
+- First complete region/category scope is silent. A later genuinely new official
+  SKU can emit NEW_SKU. A new configured target/store is not a launch or restock.
+  Same-SKU/same-store SOLD_OUT→fresh AVAILABLE records RESTOCK with
+  PICKUP_AVAILABLE details. Apple email includes SKU, region, store, state and
+  freshness through the shared notifier.
+- **Bag/Checkout BLOCKED:** the normal Edge research page showed the exact SKU,
+  name, capacity, colour and price. Its own fulfillment GET returned 541;
+  AppleCare choices and Add to Bag stayed disabled after selecting no trade-in.
+  No button was forced enabled; no cart mutation was attempted.
+- PREORDER_OPEN, ORDER_OPEN and DELIVERY_AVAILABLE remain unverified. The current
+  catalogue's `comingSoon:false` is insufficient proof of orderability. Neither
+  titles nor pickup availability create those signals. Watch case/band combinations
+  are not enabled as verified configurations.
+
+## Reuse and implementation boundary
+
+[apple-pickup-watcher](https://github.com/ENCHIGO/apple-pickup-watcher):
+**GPL-3.0-or-later; code copied into MIT AutoGrab: NO; protocol/design research: YES.**
+[iponkan/dmit](https://github.com/iponkan/dmit): no LICENSE found; URL, stock and
+page-marker reference only; code copied: NO; its browser/challenge approach was
+not adopted. See [third-party notices](../THIRD_PARTY_NOTICES.md).
+
+The existing Core, SQLite, SMTP, protocol, Native Messaging and Bandwagon adapter
+remain in use. There is no new dependency or order engine. New provider mutation
+adapters remain disabled. The existing controller only gained precise pause-code
+handling; HTTP denial is latched rather than repeatedly requested.
+
+## Verification and publication
+
+Targeted regressions preserve observed invalid/pending DMIT configuration, VMISS
+1015, unknown-period reads and Apple official catalogue/configuration semantics.
+Fixture success is not real checkout evidence. Release checks are `./test.sh`,
+`node --test edge-extension/tests/*.test.mjs`, `uv build`, source/history gitleaks
+and independent scans of the source ZIP, wheel and source distribution.
+
+Public artifacts exclude local config, databases, browser/profile data, research
+HTML, logs, email identities and original private development history. The
+original SMTP settings, earlier cart evidence and uncertain intents are retained
+locally. Orders created: **0**. Payments: **0**. LIVE/ARM: **OFF**.

@@ -21,6 +21,6 @@
 - Run relevant tests after changes; run ./test.sh, Node extension tests and
   uv build before a release. Scan final source, artifacts and full public Git
   history including commit metadata. Do not publish private development history.
-- Public publishing requires explicit user authorization. For the current
-  multi-provider sprint, public repository creation, main push and v0.3.0-alpha
-  were explicitly authorized. This is not general permission for future releases.
+- Public publishing requires explicit user authorization. For the provider closure
+  sprint, public docs/main synchronization and a justified v0.4.0-alpha release
+  are explicitly authorized. This is not general permission for future releases.

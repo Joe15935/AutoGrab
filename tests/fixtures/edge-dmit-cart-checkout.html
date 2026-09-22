@@ -1,0 +1,21 @@
+<!doctype html>
+<!-- Public labels observed in normal Edge; no captured account or form data. -->
+<html lang="en">
+<meta charset="utf-8">
+<title>Shopping Cart</title>
+<section id="cart" hidden>
+  <h1>Review &amp; Checkout</h1>
+  <p>HKG.AS3.Pro.STARTER</p><p>$79.90 USD Monthly</p>
+  <p>Subtotal</p><a href="cart.php?a=checkout">Checkout</a>
+</section>
+<section id="checkout" hidden>
+  <h1>Checkout</h1><h2>Personal Information</h2>
+  <p>Payment Details Credit Card &amp; Others Alipay Manual Bank Transfer</p>
+  <p>Total $79.90 USD</p><label><input type="checkbox">Terms</label>
+  <button type="submit">Complete Order</button>
+</section>
+<script>
+// Fixture-only display selection; no website script or interaction is copied.
+document.getElementById(new URL(location.href).searchParams.get("a") === "view" ? "cart" : "checkout").hidden = false;
+</script>
+</html>

@@ -17,22 +17,27 @@
         !/[\r\n\t]/.test(raw) ? value : null;
     } catch { return null; }
   }
-  function store(value) { return value && /^\/store(?:\/[a-z0-9][a-z0-9-]{0,79}){1,2}\/?$/.test(value.pathname); }
+  function store(value) { return value && /^\/store(?:\/[a-z0-9][a-z0-9-]{0,79}){0,2}\/?$/.test(value.pathname); }
   function expected(value) {
     if (!value || Object.getPrototypeOf(value) !== Object.prototype ||
         Object.keys(value).sort().join(",") !== "cents,currency,name,period,product_id,url" ||
         typeof value.product_id !== "string" || !slug.test(value.product_id) ||
         typeof value.name !== "string" || !value.name || value.name !== norm(value.name) || value.name.length > 200 ||
-        !store(official(value.url)) || ![null, "monthly", "quarterly", "semiannually", "annually", "biennially", "triennially"].includes(value.period) ||
+        !store(official(value.url)) || ![null, "unknown", "monthly", "quarterly", "semiannually", "annually", "biennially", "triennially"].includes(value.period) ||
         ![null, "CAD", "USD", "EUR", "GBP"].includes(value.currency) ||
         !(value.cents === null || Number.isSafeInteger(value.cents) && value.cents > 0 && value.cents < 1e12)) throw new Error("INVALID_EXPECTED_PRODUCT");
   }
+  function rateLimited() {
+    return /\berror\s*1015\b|\byou are being rate limited\b/i.test(norm(document.title + " " + document.body?.innerText));
+  }
   function challenge() {
+    if (rateLimited()) return "UNKNOWN";
     return /just a moment|verify (?:that )?you are (?:a )?human|checking your browser|验证您是真人/i.test(norm(document.title + " " + document.body?.innerText)) ||
       all('iframe[src*="challenges.cloudflare.com"],.cf-turnstile,#challenge-running,#challenge-stage').length ? "REQUIRED" : "NONE";
   }
   const login = () => challenge() === "REQUIRED" ? "UNKNOWN" : all('input[type="password"]').length ? "REQUIRED" : "UNKNOWN";
   function stage() {
+    if (rateLimited()) return "UNKNOWN";
     if (challenge() === "REQUIRED") return "HUMAN_CHALLENGE";
     if (!official(location.href) || window.top !== window) return "UNKNOWN";
     if (login() === "REQUIRED") return "LOGIN";
@@ -41,6 +46,7 @@
   const result = (ok, code, extra = {}) => ({ok, code, stage: stage(), login: login(), challenge: challenge(), ...extra});
   function guard() {
     if (!official(location.href) || window.top !== window) return result(false, "SITE_CHANGED");
+    if (rateLimited()) return result(false, "RATE_LIMITED");
     if (challenge() === "REQUIRED") return result(false, "HUMAN_CHALLENGE_REQUIRED");
     if (login() === "REQUIRED") return result(false, "LOGIN_REQUIRED");
     return null;
@@ -58,7 +64,7 @@
     const [whole, fraction] = matches[0][1].replaceAll(",", "").split(".");
     const cents = Number(whole) * 100 + Number(fraction), period = text(cycles[0]).replace(/^[ /-]+|[ /-]+$/g, "").toLowerCase();
     if (value.cents !== null && value.cents !== cents || value.currency !== null && value.currency !== matches[0][2] ||
-        value.period !== null && value.period !== period) return result(false, "PRICE_MISMATCH");
+        value.period !== null && value.period !== "unknown" && value.period !== period) return result(false, "PRICE_MISMATCH");
     return result(true, "PUBLIC_PRODUCT_VERIFIED");
   }
   const refuse = async () => ({...(guard() || result(false, "ADAPTER_READ_ONLY")), action: "NONE"});

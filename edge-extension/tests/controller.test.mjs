@@ -52,6 +52,23 @@ async function fixture(initial = {}) {
   return {controller, api, page, saved, events, actions, writes, focuses, setReadHook: f => readHook = f};
 }
 async function pumps(controller, count = 12) {for (let i=0;i<count;i++) await controller.pump();}
+test("observed provider blockers retain their diagnostic and never dispatch", async () => {
+  for (const [provider, code, stage, state] of [["vmiss", "RATE_LIMITED", "UNKNOWN", "FAILED"], ["dmit", "CONFIGURATION_UNCERTAIN", "CONFIGURATION", "PAUSED_UNCERTAIN"], ["dmit", "CONFIGURATION_INVALID", "CONFIGURATION", "FAILED"]]) {
+    const f = await fixture();
+    const start = command("OPEN_PRODUCT");
+    start.provider = provider;
+    start.product_id = provider === "vmiss" ? "us-los-angeles-cmin2/basic" : "265";
+    start.payload = {...start.payload, product: {...start.payload.product, url: provider === "vmiss" ? "https://app.vmiss.com/store/us-los-angeles-cmin2" : "https://www.dmit.io/cart.php"}};
+    f.api.tabs.get = async () => ({id: 10, status: "complete", url: start.payload.product.url});
+    f.api.tabs.sendMessage = async () => ({ok: false, stage, code, challenge: provider === "dmit" ? "NONE" : "UNKNOWN", login: "UNKNOWN"});
+    await f.controller.handle(start); await pumps(f.controller);
+    assert.equal(f.controller.active.state, state);
+    assert.equal(f.events.filter(e => e.payload.code === code).length, 1);
+    assert.equal(f.controller.normalObserved, false);
+    assert.deepEqual(f.actions, []);
+    assert.equal(f.controller.active.intent_id, start.intent_id);
+  }
+});
 test("real controller performs one dry path and stops before order", async () => {
   const f = await fixture(); const start = command(); await f.controller.handle(start); await pumps(f.controller);
   assert.equal(f.controller.active.state, "CHECKOUT_READY");

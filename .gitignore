@@ -32,3 +32,6 @@ private/
 *.key
 *private-key*
 config/smtp*.json
+config/apple.local.toml
+config/apple.local.toml.*.bak
+config/.apple-local-*

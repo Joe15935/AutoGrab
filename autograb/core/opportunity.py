@@ -20,7 +20,7 @@ def stable(product: dict) -> dict:
     def clean(value, path=()):
         if isinstance(value, dict):
             return {k: clean(v, (*path, k)) for k, v in value.items()
-                    if k not in {"observed_at", "last_checked", "request_status", "inventory_status", "fresh", "age_seconds"}
+                    if k not in {"observed_at", "last_checked", "request_status", "inventory_status", "fresh", "age_seconds", "catalog_baseline", "catalog_new_sku"}
                     and not (k == "status" and "inventory" in path)}
         if isinstance(value, list):
             result = [clean(v, path) for v in value]
@@ -38,8 +38,11 @@ def classify_event(previous: dict | None, current: dict, *, new_groups=(), new_u
     types = []
     apple = current.get("provider") == "apple"
     # An explicit monitoring target is not evidence of a newly released SKU.
-    # Apple currently has no catalogue discovery route supplying this evidence.
-    configured_baseline = apple and previous is None and current.get("metadata", {}).get("catalog_discovered") is not True
+    # Each newly selected catalog scope also initializes silently. A full later
+    # official catalog scan is required to establish a genuinely new SKU.
+    meta = current.get("metadata", {})
+    configured_baseline = apple and (meta.get("catalog_baseline") is True
+        or (previous is None and meta.get("catalog_new_sku") is not True))
     available = current.get("availability") == "AVAILABLE"
     if apple:
         available = available and any(p.get("fresh") is True and p.get("availability") == "AVAILABLE"

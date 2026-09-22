@@ -10,13 +10,13 @@
 
 | 商家 | 已验证内容 | 限制 |
 |---|---|---|
-| 搬瓦工 | 商品→配置→购物车→已登录 Checkout；原48个商品基线保留 | 停在最终下单之前 |
-| DMIT | 正常 Edge 当前自定义目录91个PID，解析器与基线 | 轻量HTTP遇安全验证；配置页已到，购物车提交结果未确认；扩展只读 |
-| VMISS | 官方入口和实验解析器 | 真人验证阻塞；基线、购物车、Checkout未验证 |
-| V.PS | 官方六类目录66个PID；实际是HostBill风格入口 | 营销购买链接不等于有货；扩展只读，购物车未验证 |
-| Apple | 指定SKU和门店的官方自提库存接口 | 用户目标尚未配置；配送、预购和Bag/Checkout未验证 |
+| 搬瓦工 L5 | 既有商品→配置→购物车→已登录 Checkout；48个普通商品基线保留 | 本轮未重跑，停在最终下单前 |
+| DMIT L5人工演练 | PID 266、$79.90/月；真实购物车刷新后仍保留，已到登录后的Checkout | 停在Complete Order前；扩展仍只读；旧不确定意图保留 |
+| VMISS L0部分 | 当前官方商店入口已确认 | 真实页面 Error 1015 临时限流，并非可完成的CAPTCHA；无实际基线 |
+| V.PS L3 | 官方66个PID；当前真实订单按钮边界已核实 | 一步式按钮会创建真实订单，保持禁用；独立Cart/Checkout未验证 |
+| Apple L3 | 动态官方目录、无需SKU的配置向导；CN研究目标自提库存实测通过 | 商品页配送查询541，加入购物袋禁用；Bag/Checkout、配送及预购未验证 |
 
-这些状态分别记录，不能将“已接入”理解为“全链路READY”。详见[验收记录](docs/MULTI_PROVIDER_STATUS.md)。
+这些状态分别记录，不能将“已接入”理解为“全链路READY”。详见[验收记录](docs/MULTI_PROVIDER_STATUS.md)和[v0.4收口报告](docs/AUTOGRAB_PROVIDER_CLOSURE_REPORT.md)。
 
 ## 安装与运行
 
@@ -30,7 +30,17 @@ cp config/config.example.toml config/config.toml
 ./start.sh status
 ```
 
-可把 `all` 换为 `bandwagon`、`dmit`、`vmiss`、`vps`、`apple`。正式读取的配置是 `config/config.toml`；根目录 YAML 文件仅作配置说明。Apple 必须自行填写真实地区、SKU和门店，研究样例不会默认加入监控。产品系列、容量、颜色等仅描述已知SKU，目前不自动推导全部变体。
+可把 `all` 换为 `bandwagon`、`dmit`、`vmiss`、`vps`、`apple`。正式读取的配置是 `config/config.toml`；根目录 YAML 文件仅作配置说明。Apple 通过当前官方目录选择目标，无需手填SKU：
+
+```sh
+./start.sh apple-configure
+./start.sh apple-catalog-refresh
+./start.sh monitor --once --provider apple
+```
+
+向导依次选择地区、商品类别、型号、容量、颜色、适用运营商及自提门店，保存到私有 `config/apple.local.toml`。已有Apple配置保留备份，主配置和SMTP不改写。研究目标不会自动成为你的正式监控偏好。
+
+每个地区/类别的首次完整目录扫描静默建立基线；之后官网新增SKU才产生 `NEW_SKU`。手动添加监控目标不算新品。已确认缺货→新鲜有货，记录 `RESTOCK` 及 `PICKUP_AVAILABLE`；失败、被阻挡、限流、过期数据保持 `UNKNOWN`。预购、开放订购和配送尚无受支持的充分官方证据，保持未验证；Apple Watch组合配置仍属实验性。
 
 普通监控只记录机会并发送已配置邮件。显式加 `--prepare-checkout` 才允许已验证的适配器把新鲜官方机会送到 Edge，仍停在最终订单之前。实验商家的写操作关闭。
 

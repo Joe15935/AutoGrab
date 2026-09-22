@@ -435,6 +435,15 @@ class EmailNotifier:
                 ("Product URL", safe_provider_url(product)),
                 ("Cart URL", safe_public_url(boundary.get("cart_url"))),
             )
+            if product.provider == "apple":
+                inventory = product.metadata.get("inventory", [])
+                rows = [" | ".join(_text(item.get(key)) for key in
+                    ("sku", "region", "mode", "store_id", "availability")) +
+                    (" | fresh" if item.get("fresh") is True else " | unverified/stale")
+                    for item in inventory if isinstance(item, dict)][:80]
+                opportunities = event.get("details", {}).get("opportunities", [])
+                fields += (("Observed opportunity", ", ".join(_text(v) for v in opportunities) or "RESEARCH / REGULAR"),
+                           ("Apple inventory (SKU | region | mode | store | state | freshness)", "\n".join(rows) or "UNKNOWN"))
             body = "\n\n".join(f"{label}:\n{value}" for label, value in fields)
             body += "\n\nNo order or payment was created by AutoGrab. Cart access is session-bound and may require the original browser session. Cart/configuration visibility does not reserve inventory.\n"
             message = self._message(

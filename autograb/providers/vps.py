@@ -15,7 +15,7 @@ from urllib.request import Request, build_opener
 
 from autograb.core.errors import AutoGrabError
 from autograb.core.models import Product
-from .vmiss import _NoRedirect, _normal_document, MAX_PAGE_BYTES
+from .vmiss import _NoRedirect, _normal_document, _http_error_code, MAX_PAGE_BYTES
 
 ORIGIN = "https://v.ps"
 ORDER_ORIGIN = "https://vps.hosting"
@@ -109,14 +109,14 @@ class VPSProvider:
             raise AutoGrabError("CATALOG_URL_INVALID")
         try:
             with build_opener(_NoRedirect).open(Request(url, headers={
-                    "User-Agent": "AutoGrab/0.3 (public inventory monitor; DRY_RUN)",
+                    "User-Agent": "AutoGrab/0.4 (public inventory monitor; DRY_RUN)",
                     "Accept": "text/html"}), timeout=15) as response:
                 raw = response.read(MAX_PAGE_BYTES + 1)
                 if response.status != 200 or len(raw) > MAX_PAGE_BYTES:
                     raise AutoGrabError("CATALOG_UNAVAILABLE")
                 return raw.decode("utf-8", errors="strict")
         except HTTPError as error:
-            raise AutoGrabError("HUMAN_CHALLENGE_REQUIRED" if error.code in {403, 429} else "CATALOG_UNAVAILABLE") from None
+            raise AutoGrabError(_http_error_code(error)) from None
         except (URLError, OSError, UnicodeError):
             raise AutoGrabError("NETWORK_ERROR") from None
 

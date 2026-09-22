@@ -38,7 +38,7 @@ class _NoRedirect(HTTPRedirectHandler):
 def _http_get(url):
     """No cookie jar, credentials, browser impersonation, or redirect following."""
     request = Request(url, headers={"Accept": "application/json",
-        "User-Agent": "AutoGrab/0.3 (public inventory monitor)"})
+        "User-Agent": "AutoGrab/0.4 (public inventory monitor)"})
     try:
         with build_opener(_NoRedirect).open(request, timeout=20) as response:
             data = response.read(MAX_RESPONSE_BYTES + 1)
@@ -235,9 +235,26 @@ class AppleProvider:
     provider_name = "apple"
 
     def __init__(self, settings=None, *, log=None, transport=None, clock=None):
+        self.settings = dict(settings or {})
         self.monitor = AppleInventoryMonitor(settings, transport=transport, clock=clock)
         self.log = log
         self.details = {}
+        self.catalog = None
+        self.catalog_products = []
+        self.catalog_status = "DISABLED"
+        self.catalog_next = 0
+        self.catalog_clock = clock or time.monotonic
+        self.catalog_blocked = False
+        if self.settings.get("catalog_enabled") is True:
+            from .apple_catalog import AppleCatalog
+            categories = self.settings.get("catalog_categories")
+            interval = self.settings.get("catalog_refresh_seconds", 3600)
+            if (not isinstance(categories, list) or not 1 <= len(categories) <= 8
+                    or any(not isinstance(c, str) or not re.fullmatch(r"[a-z0-9-]{1,40}", c) for c in categories)
+                    or type(interval) not in (int, float) or not 3600 <= interval <= 86400):
+                raise AutoGrabError("APPLE_CATALOG_SCOPE_NOT_CONFIGURED")
+            self.catalog = AppleCatalog(self.settings.get("region"))
+            self.catalog_status = "PENDING"
 
     @property
     def status(self):
@@ -249,8 +266,24 @@ class AppleProvider:
 
     async def discover_products(self):
         inventory = await self.monitor.poll()
-        if not inventory:
-            raise AutoGrabError(self.status)
+        catalog_products = []
+        if self.catalog and not self.catalog_blocked and self.catalog_clock() >= self.catalog_next:
+            self.catalog_next = self.catalog_clock() + self.settings.get("catalog_refresh_seconds", 3600)
+            try:
+                catalog_products = await asyncio.to_thread(self.catalog.refresh, self.settings["catalog_categories"])
+                self.catalog_products = catalog_products
+                self.catalog_status = "VERIFIED"
+            except AutoGrabError as error:
+                self.catalog_status = error.code
+                self.catalog_blocked = error.code in {"HUMAN_CHALLENGE_REQUIRED", "RATE_LIMITED"}
+                if self.log:
+                    self.log.write("APPLE_CATALOG_PAUSED", code=error.code)
+                if not inventory:
+                    raise
+        if not inventory and not catalog_products:
+            if self.catalog_products and not self.catalog_blocked:
+                return self.catalog_products
+            raise AutoGrabError(self.catalog_status if self.catalog else self.status)
         products = []
         for target in self.monitor.targets:
             sku = target["sku"]
@@ -269,6 +302,9 @@ class AppleProvider:
             products.append(Product(product_id=product_id, name=name, availability=state,
                 prices=[], product_url=url, categories=["Apple", str(target.get("product_family", "Configured SKU"))],
                 locations=target["stores"], eligible=True, order_url=None, provider="apple", **kwargs))
+        if catalog_products:
+            from .apple_catalog import merge_observations
+            return merge_observations([*catalog_products, *products], [])
         return products
 
     async def check_product(self, product_id):

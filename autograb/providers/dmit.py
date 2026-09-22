@@ -268,7 +268,7 @@ class DMITProvider:
     def _http(self, url):
         if not _catalog_url(url):
             raise AutoGrabError("DATA_SOURCE_UNAVAILABLE")
-        request = Request(url, headers={"Accept": "text/html", "User-Agent": "AutoGrab/0.3 (public inventory monitor)"})
+        request = Request(url, headers={"Accept": "text/html", "User-Agent": "AutoGrab/0.4 (public inventory monitor)"})
         try:
             response = build_opener(_NoRedirect).open(request, timeout=15)
         except HTTPError as error:

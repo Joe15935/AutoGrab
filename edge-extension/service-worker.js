@@ -173,6 +173,9 @@ export class CompanionController {
   async checkResult(result) {
     if (!result || typeof result !== "object") { await this.pause("FAILED", "INVALID_PAGE_RESULT"); return false; }
     this.active.challenge = result.challenge || "UNKNOWN"; this.active.login = result.login || "UNKNOWN";
+    if (result.code === "RATE_LIMITED") { await this.pause("FAILED", "RATE_LIMITED", "SITE_CHANGED", result); return false; }
+    if (result.code === "CONFIGURATION_UNCERTAIN") { await this.pause("PAUSED_UNCERTAIN", "CONFIGURATION_UNCERTAIN", "SITE_CHANGED", result); return false; }
+    if (result.code === "CONFIGURATION_INVALID") { await this.pause("FAILED", "CONFIGURATION_INVALID", "SITE_CHANGED", result); return false; }
     if (result.challenge === "REQUIRED" || result.code === "HUMAN_CHALLENGE_REQUIRED") { await this.pause("WAITING_FOR_HUMAN", "HUMAN_CHALLENGE_REQUIRED", "HUMAN_CHALLENGE_REQUIRED", result); return false; }
     if (result.login === "REQUIRED" || result.code === "LOGIN_REQUIRED") { result = {...result, login: "REQUIRED"}; await this.pause("WAITING_FOR_HUMAN", "LOGIN_REQUIRED", "LOGIN_REQUIRED", result); return false; }
     return true;
@@ -302,7 +305,7 @@ export class CompanionController {
       if (rev !== this.revision || !this.connected) return;
       if (this.active.state !== "RUNNING" && this.active.state !== "OPENED") {
         // A challenge page is observed passively; no configure/click runs here.
-        if (page.challenge === "NONE" && page.login !== "REQUIRED" && !["UNKNOWN", "LOGIN", "HUMAN_CHALLENGE"].includes(page.stage)) {
+        if (page.challenge === "NONE" && page.login !== "REQUIRED" && !["RATE_LIMITED", "CONFIGURATION_UNCERTAIN", "CONFIGURATION_INVALID"].includes(page.code) && !["UNKNOWN", "LOGIN", "HUMAN_CHALLENGE"].includes(page.stage)) {
           this.active.challenge = "NONE"; this.active.login = page.login || "UNKNOWN";
           if (!this.normalObserved) { this.normalObserved = true; await this.save(); await this.pageOpened(page); }
         }

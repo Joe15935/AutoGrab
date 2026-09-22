@@ -2,7 +2,7 @@
 
 Multi-provider stock monitor and checkout assistant for limited VPS plans and product launches.
 
-[简体中文](README.zh-CN.md) · [Security](SECURITY.md) · [Research and verification](docs/MULTI_PROVIDER_STATUS.md)
+[简体中文](README.zh-CN.md) · [Security](SECURITY.md) · [Research and verification](docs/MULTI_PROVIDER_STATUS.md) · [v0.4 closure report](docs/AUTOGRAB_PROVIDER_CLOSURE_REPORT.md)
 
 **Experimental alpha. DRY_RUN by default. LIVE OFF. ARM OFF. No final order submission or automatic payment.**
 
@@ -12,11 +12,11 @@ AutoGrab keeps a catalogue baseline, detects subsequent product and stock change
 
 | Provider | Discovery / stock | Edge checkout assistance |
 |---|---|---|
-| BandwagonHost | Official catalogue; existing baseline retained; new-product/restock/group detection | Product → configuration → cart → signed-in checkout verified; stops before final order |
-| DMIT | Current custom catalogue parser; normal Edge public snapshot verified; anonymous HTTP may require a human challenge | Experimental read-only companion; manual configuration reached; cart/checkout unverified |
-| VMISS | Experimental parser; current official store requires human verification | Read-only handoff; cart/checkout unverified |
-| V.PS | 66 public plan IDs observed; marketing purchase links do not prove stock | HostBill-style portal, not WHMCS; read-only handoff; cart/checkout unverified |
-| Apple Store | Configured SKU + store pickup inventory; official CN endpoint tested | Read-only handoff; delivery, preorder and bag/checkout unverified |
+| BandwagonHost — L5 | Official catalogue; existing baseline retained; new-product/restock/group detection | Product → configuration → cart → signed-in checkout verified; stops before final order |
+| DMIT — L5 manual flow | 91-product baseline; public catalogue verified | PID 266, USD 79.90 monthly: exact cart survived refresh and signed-in checkout reached; stopped at Complete Order; companion remains read-only |
+| VMISS — L0 partial | Official store identified; no live product baseline | Observed Cloudflare Error 1015 (rate limit), not a CAPTCHA; same-session read-only handoff; cart/checkout unverified |
+| V.PS — L3 | 66 public plan IDs; marketing purchase links do not prove stock | Current one-step Order button creates a real order; submission stays disabled; separate cart/checkout unverified |
+| Apple Store — L3 | Dynamic official catalogue and target wizard; CN research target pickup verified | Bag blocked by the current page's fulfillment HTTP 541 and disabled controls; delivery/preorder/order-open unverified |
 
 A provider being present in the registry does **not** mean its checkout is ready. Unknown stock remains unknown. No claim of a reserved item, an order, or an invoice is made from a visible cart.
 
@@ -32,9 +32,17 @@ cp config/config.example.toml config/config.toml
 ./start.sh monitor --once --provider all
 ```
 
-Use `--provider bandwagon`, `dmit`, `vmiss`, `vps`, or `apple` to inspect one provider. All commands share the existing database. HTTP blocking pauses that provider rather than launching a bypass. A paused process must be explicitly restarted after the human issue is resolved; it does not retry a challenge forever.
+Use `--provider bandwagon`, `dmit`, `vmiss`, `vps`, or `apple` to inspect one provider. All commands share the existing database. HTTP blocking pauses that provider rather than launching a bypass. A paused process must be explicitly restarted after access is restored; HTTP denial and rate limits do not trigger automatic request retries. An Edge intent is resumed in its existing tab/session only after fresh normal-page evidence.
 
-Runtime configuration is **TOML**. [config.example.yaml](config.example.yaml) is a readable configuration outline, not an alternative parser. Apple is intentionally unconfigured until you supply a real region, exact SKU, and store IDs. An example research SKU is not a default purchase target. Family/model/storage/color/carrier fields describe a configured SKU; automatic variant expansion is not implemented.
+Runtime configuration is **TOML**. [config.example.yaml](config.example.yaml) is a readable configuration outline, not an alternative parser. Configure Apple using current official choices; no SKU entry is required:
+
+```sh
+./start.sh apple-configure
+./start.sh apple-catalog-refresh
+./start.sh monitor --once --provider apple
+```
+
+The wizard selects region → official category → model → capacity → color → carrier (where applicable) → store(s), then writes a private `config/apple.local.toml` overlay. Existing Apple settings are backed up; the main config and SMTP settings remain intact. A research target is not installed automatically. The first complete scan of each region/category is silent; later newly observed official SKUs can emit `NEW_SKU`. Configuring an existing SKU is not a launch. Known sold-out → fresh available store inventory produces a `RESTOCK` event with `PICKUP_AVAILABLE` details. Errors and stale observations remain `UNKNOWN`. Preorder, order-open and delivery states remain unverified until a supported official source proves them. Apple Watch combinations remain experimental.
 
 ## Normal Edge companion
 

@@ -121,13 +121,16 @@ async def run_multi(args, config):
                         code = result.code if isinstance(result, AutoGrabError) else "DATA_SOURCE_UNAVAILABLE"
                         report[name] = {"status": "USER_ACTION_REQUIRED" if code in {"HUMAN_CHALLENGE_REQUIRED", "LOGIN_REQUIRED", "APPLE_TARGETS_NOT_CONFIGURED"} else "BLOCKED", "reason": code}
                         logs[name].write("PROVIDER_PAUSED", code=code)
-                        if code in {"HUMAN_CHALLENGE_REQUIRED", "LOGIN_REQUIRED", "APPLE_TARGETS_NOT_CONFIGURED", "RATE_LIMITED"}:
+                        if code in {"HUMAN_CHALLENGE_REQUIRED", "LOGIN_REQUIRED", "APPLE_TARGETS_NOT_CONFIGURED", "RATE_LIMITED", "HTTP_403"}:
                             blocked.add(name)
                             paused_report[name] = report[name]
                         continue
                     if args.command == "probe":
                         report[name] = {"status": "DISCOVERED", "count": len(result)}
                         continue
+                    if name == "apple":
+                        from autograb.providers.apple_catalog import merge_observations
+                        result = merge_observations(result, store.list_products())
                     snapshot = store.ingest(result, source=getattr(providers[name], "source", None) or "OFFICIAL_PUBLIC_INVENTORY")
                     opportunities = 0
                     for event in snapshot["events"]:

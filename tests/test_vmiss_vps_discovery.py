@@ -1,7 +1,9 @@
 """Small public parser regressions. VMISS contract is synthetic/live unverified."""
 from pathlib import Path
+from io import BytesIO
 import unittest
 from unittest.mock import Mock
+from urllib.error import HTTPError
 
 from autograb.core.errors import AutoGrabError
 from autograb.providers import vmiss, vps
@@ -63,6 +65,18 @@ class PublicParserTests(unittest.TestCase):
                      "<title>Just a moment</title>", "<h1>Unrecognized layout</h1>"):
             with self.subTest(), self.assertRaises(AutoGrabError):
                 vmiss.parse_catalog(html)
+
+    def test_observed_vmiss_error_1015_is_rate_limited_not_human_challenge(self):
+        html = (FIXTURES / "vmiss-rate-limited.public.html").read_text()
+        with self.assertRaises(AutoGrabError) as raised:
+            vmiss.parse_catalog(html)
+        self.assertEqual(raised.exception.code, "RATE_LIMITED")
+        for status, body, expected in ((403, html, "RATE_LIMITED"), (429, "", "RATE_LIMITED"),
+                                        (403, "Forbidden", "HTTP_403"),
+                                        (403, "<title>Just a moment</title>", "HUMAN_CHALLENGE_REQUIRED")):
+            with self.subTest(status=status, code=expected):
+                error = HTTPError(vmiss.CATALOG_URL, status, "blocked", {}, BytesIO(body.encode()))
+                self.assertEqual(vmiss._http_error_code(error), expected)
 
 
 class PublicDiscoveryTests(unittest.IsolatedAsyncioTestCase):

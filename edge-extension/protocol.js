@@ -1,6 +1,6 @@
 // Fixed, versioned Native Messaging protocol. No arbitrary selectors or scripts.
 export const VERSION = 1;
-export const EXTENSION_VERSION = "0.3.0";
+export const EXTENSION_VERSION = "0.4.0";
 export const HOST = "com.autograb.edge";
 export const MAX_BYTES = 65536;
 export const COMMANDS = new Set(["PING", "GET_STATUS", "DISARM", "OPEN_PRODUCT", "START_DRY_RUN", "START_CHECKOUT", "RESUME_INTENT", "CANCEL_INTENT"]);

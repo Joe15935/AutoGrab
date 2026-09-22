@@ -29,7 +29,7 @@
         Object.keys(value).sort().join(",") !== "cents,currency,name,period,product_id,url" ||
         typeof value.product_id !== "string" || !/^[1-9][0-9]{0,39}$/.test(value.product_id) ||
         typeof value.name !== "string" || !value.name || value.name !== norm(value.name) || value.name.length > 200 ||
-        !family(url(value.url)) || ![null, "monthly", "annually"].includes(value.period) ||
+        !family(url(value.url)) || ![null, "unknown", "monthly", "annually"].includes(value.period) ||
         ![null, "EUR"].includes(value.currency) ||
         !(value.cents === null || Number.isSafeInteger(value.cents) && value.cents > 0 && value.cents < 1e12)) throw new Error("INVALID_EXPECTED_PRODUCT");
   }
@@ -65,7 +65,7 @@
     if (prices.length !== 1) return result(false, "PRICE_UNVERIFIED");
     const [whole, fraction] = prices[0][1].replaceAll(",", "").split(".");
     const cents = Number(whole) * 100 + Number(fraction), period = prices[0][2] === "mo" ? "monthly" : "annually";
-    if (value.cents !== null && value.cents !== cents || value.period !== null && value.period !== period) return result(false, "PRICE_MISMATCH");
+    if (value.cents !== null && value.cents !== cents || value.period !== null && value.period !== "unknown" && value.period !== period) return result(false, "PRICE_MISMATCH");
     return result(true, "PUBLIC_PRODUCT_VERIFIED");
   }
   const refuse = async () => ({...(guard() || result(false, "ADAPTER_READ_ONLY")), action: "NONE"});

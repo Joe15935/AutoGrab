@@ -35,6 +35,14 @@ class Config:
                 or set(conf.providers) - {"bandwagon", "dmit", "vmiss", "vps", "apple"}
                 or any(not isinstance(v, dict) for v in conf.providers.values())):
             raise ValueError("Invalid provider settings")
+        apple_path = root / "config/apple.local.toml"
+        if apple_path.is_symlink() or (apple_path.exists() and (not apple_path.is_file() or apple_path.stat().st_nlink != 1)):
+            raise ValueError("Apple local settings must be an ordinary file")
+        if apple_path.exists():
+            local = tomllib.loads(apple_path.read_text())
+            if set(local) != {"apple"} or not isinstance(local["apple"], dict):
+                raise ValueError("Invalid Apple local settings")
+            conf.providers["apple"] = {**conf.providers.get("apple", {}), **local["apple"]}
         for settings in conf.providers.values():
             if "enabled" in settings and type(settings["enabled"]) is not bool:
                 raise ValueError("Provider enabled must be boolean")

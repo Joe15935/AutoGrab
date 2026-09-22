@@ -33,9 +33,28 @@ def _normal_document(html):
         raise AutoGrabError("CATALOG_INVALID")
     doc = _Document(html)
     text = doc.root.text()
-    if re.search(r"just a moment|verify (?:that )?you are (?:a )?human|checking your browser|access denied", text, re.I):
+    if re.search(r"\berror\s*1015\b|\byou are being rate limited\b", text, re.I):
+        raise AutoGrabError("RATE_LIMITED")
+    if re.search(r"just a moment|verify (?:that )?you are (?:a )?human|checking your browser", text, re.I):
         raise AutoGrabError("HUMAN_CHALLENGE_REQUIRED")
     return doc
+
+
+def _http_error_code(error):
+    if error.code == 429:
+        return "RATE_LIMITED"
+    if error.code == 403:
+        # A 403 can be a challenge, a rate-limit page or a plain denial. Read
+        # only the returned public body; never repeat the blocked request.
+        try:
+            _normal_document(error.read(MAX_PAGE_BYTES + 1).decode("utf-8", errors="replace"))
+        except AutoGrabError as classified:
+            if classified.code in {"RATE_LIMITED", "HUMAN_CHALLENGE_REQUIRED"}:
+                return classified.code
+        except (OSError, ValueError):
+            pass
+        return "HTTP_403"
+    return "CATALOG_UNAVAILABLE"
 
 
 def _store_url(value, base=CATALOG_URL):
@@ -122,14 +141,14 @@ class VMISSProvider:
             raise AutoGrabError("CATALOG_URL_INVALID")
         try:
             with build_opener(_NoRedirect).open(Request(url, headers={
-                    "User-Agent": "AutoGrab/0.3 (public inventory monitor; DRY_RUN)",
+                    "User-Agent": "AutoGrab/0.4 (public inventory monitor; DRY_RUN)",
                     "Accept": "text/html"}), timeout=15) as response:
                 raw = response.read(MAX_PAGE_BYTES + 1)
                 if response.status != 200 or len(raw) > MAX_PAGE_BYTES:
                     raise AutoGrabError("CATALOG_UNAVAILABLE")
                 return raw.decode("utf-8", errors="strict")
         except HTTPError as error:
-            raise AutoGrabError("HUMAN_CHALLENGE_REQUIRED" if error.code in {403, 429} else "CATALOG_UNAVAILABLE") from None
+            raise AutoGrabError(_http_error_code(error)) from None
         except (URLError, OSError, UnicodeError):
             raise AutoGrabError("NETWORK_ERROR") from None
 

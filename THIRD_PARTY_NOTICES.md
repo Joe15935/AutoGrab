@@ -32,3 +32,22 @@ Minimal public-response/DOM fixtures are labelled as actual-schema excerpts or
 synthetic contracts. They contain no authentication state or copied application
 implementations. Full downloaded upstream source and full merchant pages are
 research scratch and are excluded from releases.
+
+## v0.4.0-alpha closure research
+
+The current Apple watcher remains a protocol/design reference only:
+GPL-3.0-or-later; **code copied into MIT AutoGrab: NO**. AutoGrab independently
+parses official purchase-page JSON and store-list data with its existing Python
+standard-library runtime. Installing the separate Rust/Tauri watcher would
+duplicate monitoring, configuration and notifications; no such runtime was added.
+
+DMIT's small monitor supplies PID/stock markers, not the current configuration
+response semantics. Current official frontend code and ordinary Edge responses
+were therefore checked directly. The website's implementation was not vendored.
+
+For V.PS, the decisive reuse source is the official HostBill one-step order-page
+contract at https://dev.hostbillapp.com/orderpages/ and current provider frontend
+code. It verifies that the observed submission creates an order, so AutoGrab
+keeps that mutation disabled. VMISS's older monitor references cannot certify
+a currently rate-limited live store. The minimal route remains fixed adapters
+with existing Core/SMTP/SQLite/Edge; no added production dependencies or services.
