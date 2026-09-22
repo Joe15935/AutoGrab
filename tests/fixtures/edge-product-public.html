@@ -1,0 +1,20 @@
+<!doctype html><html lang="en"><head><title>Offline public catalog shape</title></head><body>
+<!-- Synthetic fixture of observed 2026-09-22 Edge public UI. The public card
+     omits account logout, product name and USD. No account HTML is retained. -->
+<header><a href="/clientarea.php">Client Area</a></header>
+<h1>VPS Configurations</h1><section><h2>Billing cycle</h2>
+<label><input type="radio" name="period" value="monthly" checked>1 Month</label>
+<label><input type="radio" name="period" value="quarterly">3 Months</label>
+<label><input type="radio" name="period" value="semiannually">6 Months</label>
+<label><input type="radio" name="period" value="annually">1 Year</label></section>
+<article><p>20 GB RAID-10 SSD</p><p>1 GB RAM</p><p>2 x CPU</p><p>1 TB/mo Transfer</p><p>2.5 Gigabit Link Speed</p>
+<p class="price">$49.99 * /3month</p>
+<a class="order" href="/cart.php?a=add&amp;pid=87&amp;billingcycle=monthly&amp;configoption%5B17%5D=146">Order</a></article>
+<script>
+  window.fixtureBillingSelections = 0;
+  document.querySelector('input[value="annually"]').addEventListener('change', () => {
+    window.fixtureBillingSelections += 1;
+    document.querySelector('.price').textContent = '$169.99 * /year';
+    document.querySelector('.order').href = '/cart.php?a=add&pid=87&billingcycle=annually&configoption%5B17%5D=146';
+  });
+</script></body></html>

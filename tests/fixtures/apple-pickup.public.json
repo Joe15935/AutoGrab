@@ -1,0 +1,17 @@
+{
+  "head": {"status": "200"},
+  "body": {
+    "stores": [{
+      "storeNumber": "R359",
+      "storeName": "南京东路",
+      "partsAvailability": {
+        "MYEV3CH/A": {
+          "partNumber": "MYEV3CH/A",
+          "pickupDisplay": "available",
+          "storePickEligible": true,
+          "messageTypes": {"regular": {"storePickupProductTitle": "iPhone 16 128GB 黑色"}}
+        }
+      }
+    }]
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "tiers": [
+    {"id": "basic", "name": "Basic VPS", "desc": "<p>Public fixture category</p>"},
+    {"id": "ecommerce", "name": "E-Commerce VPS"}
+  ],
+  "locations": [
+    {
+      "city": "Vancouver",
+      "country": "Canada",
+      "countryCode": "CA",
+      "datacenters": [
+        {"id": "CABC_1", "name": "Cologix VAN3", "tiers": ["basic", "ecommerce"], "features": []}
+      ]
+    },
+    {
+      "city": "New York",
+      "datacenters": [
+        {"id": "USNY_6", "name": "New York", "tiers": ["basic"], "features": []}
+      ]
+    }
+  ],
+  "products": [
+    {
+      "id": 44,
+      "name": "20G KVM - PROMO",
+      "prices": [{"cents": 4999, "currency": "USD", "period": "Annually"}],
+      "outOfStock": false,
+      "tiers": ["basic"],
+      "datacenters": {"CABC_1": 39, "USNY_6": 130},
+      "dcOption": 10,
+      "ssd": 20000,
+      "ram": 1024,
+      "cpu": 2,
+      "transfer": 1000000,
+      "link": 1000
+    },
+    {
+      "id": "999",
+      "name": "High Capacity",
+      "prices": [{"cents": 99999999, "currency": "USD", "period": "Annually"}],
+      "outOfStock": true,
+      "tiers": ["basic"],
+      "datacenters": {"USNY_6": 130}
+    },
+    {
+      "id": 1000,
+      "name": "Monthly VPS",
+      "prices": [{"cents": 100, "currency": "USD", "period": "Monthly"}],
+      "tiers": ["basic"],
+      "datacenters": {"CABC_1": 39}
+    }
+  ]
+}

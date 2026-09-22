@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "autograb"
+version = "0.3.0a0"
+description = "Multi-provider stock monitoring and guarded normal Edge checkout assistant"
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+dependencies = ["playwright>=1.58,<2", "keyring>=25,<27"]
+
+[project.scripts]
+autograb = "autograb.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["autograb"]
+
+[tool.hatch.build.targets.sdist]
+include = ["autograb/", "tests/", "config/config.example.toml", "config/edge-identity.json", "edge-extension/", "scripts/", "docs/", "README.md", "README.zh-CN.md", "LICENSE", "SECURITY.md", "THIRD_PARTY_NOTICES.md", "config.example.yaml", "AGENTS.md", "pyproject.toml", "uv.lock", "setup.sh", "start.sh", "test.sh", "email-test.sh", "open-session.sh", "configure.sh", "安装 AutoGrab Edge Companion.command", ".gitignore", ".gitleaks.toml"]

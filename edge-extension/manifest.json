@@ -1,0 +1,93 @@
+{
+  "manifest_version": 3,
+  "name": "AutoGrab Edge Companion",
+  "version": "0.3.0",
+  "description": "Use normal Edge for provider-specific dry runs and read-only handoff, stopping before order or payment.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA19W5gKSCkIa2ygkCkJIVlUO7YYlF7egIlTIG+XZm5e3CbWg4Gh7dxZOrHu+CTwwW4zK8sVeD0UYt/wzWIGdIRkFXfk0h7jNjIkb+SmocPdS38w7GW6TGEbKA1zawsiAGtbQxIxBWoEiqXcPD4P6PuX7JLWMxyL3wuV70c8zZ/flhUm3MW116edEm7zDM33NWK7HGuL1i8TZ4W3KvFAH2IlqG0cCKm/clHalJeg0Th4xPzdlCX7pqjSBZvXsmSmGXYPg26yf7tgIzmoB80xY9ekEIAYM5fPKW7WuqnJOIJ/HpsEq82XY8P7sb7HLbSxonsHoua21KnW+8SbIfQ6VFVwIDAQAB",
+  "permissions": [
+    "nativeMessaging",
+    "storage",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://bandwagonhost.com/*",
+    "https://www.dmit.io/*",
+    "https://app.vmiss.com/*",
+    "https://v.ps/*",
+    "https://vps.hosting/*",
+    "https://www.apple.com/*",
+    "https://www.apple.com.cn/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "AutoGrab Edge Companion"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://bandwagonhost.com/*"
+      ],
+      "js": [
+        "providers/bandwagon/adapter.js",
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://www.dmit.io/*"
+      ],
+      "js": [
+        "providers/dmit/adapter.js",
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://app.vmiss.com/*"
+      ],
+      "js": [
+        "providers/vmiss/adapter.js",
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://v.ps/*",
+        "https://vps.hosting/*"
+      ],
+      "js": [
+        "providers/vps/adapter.js",
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://www.apple.com/*",
+        "https://www.apple.com.cn/*"
+      ],
+      "js": [
+        "providers/apple/adapter.js",
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'"
+  },
+  "minimum_chrome_version": "106"
+}

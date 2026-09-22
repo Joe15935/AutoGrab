@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Exact public RSA key for stable Edge extension ID; never a private key or API credential"
+condition = "AND"
+paths = ['''(?:^|/)(?:edge-extension/manifest\.json|config/edge-identity\.json)$''']
+regexTarget = "secret"
+regexes = ['''^MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA19W5gKSCkIa2ygkCkJIVlUO7YYlF7egIlTIG\+XZm5e3CbWg4Gh7dxZOrHu\+CTwwW4zK8sVeD0UYt/wzWIGdIRkFXfk0h7jNjIkb\+SmocPdS38w7GW6TGEbKA1zawsiAGtbQxIxBWoEiqXcPD4P6PuX7JLWMxyL3wuV70c8zZ/flhUm3MW116edEm7zDM33NWK7HGuL1i8TZ4W3KvFAH2IlqG0cCKm/clHalJeg0Th4xPzdlCX7pqjSBZvXsmSmGXYPg26yf7tgIzmoB80xY9ekEIAYM5fPKW7WuqnJOIJ/HpsEq82XY8P7sb7HLbSxonsHoua21KnW\+8SbIfQ6VFVwIDAQAB$''']

@@ -1,0 +1,45 @@
+# Config files cannot enable LIVE. Runtime ARM is explicit and expires.
+mode = "DRY_RUN"
+normal_interval = 30
+timeout_ms = 20000
+
+[smtp]
+# host = "smtp.example.com"
+# port = 587
+# username = "your-account"
+# sender = "you@example.com"
+# recipient = "you@example.com"
+# tls_mode = "starttls"
+# secret_account = "your-account" # macOS Keychain service: AutoGrab SMTP
+# Never put a password in this file. Temporary SMTP_PASSWORD env is also supported.
+
+[bandwagon]
+# Optional preference only; no gateway selection is enabled at this checkpoint.
+# preferred_payment_gateway = "paypal"
+
+# Provider factories share the existing Core and private database.
+[providers.bandwagon]
+enabled = true
+[providers.dmit]
+enabled = true
+[providers.vmiss]
+enabled = true
+[providers.vps]
+enabled = true
+[providers.apple]
+enabled = true
+interval_seconds = 60
+# Required before Apple can poll: region = "cn" (or another supported region).
+targets = []
+# Replace the empty targets above with explicit targets, for example:
+# [[providers.apple.targets]]
+# sku = "REPLACE_WITH_CURRENT_OFFICIAL_SKU"
+# product_family = "Your chosen family"
+# model = "Your chosen model"
+# storage = "Your chosen storage"
+# color = "Your chosen color"
+# carrier = "Your chosen carrier, if applicable"
+# stores = ["R000"] # replace with an official store ID
+# modes = ["pickup"]
+# product_url = "https://www.apple.com.cn/shop/buy-..."
+# delivery is currently unverified; do not infer it from pickup.

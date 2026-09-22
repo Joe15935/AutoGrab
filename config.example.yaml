@@ -1,0 +1,22 @@
+# Configuration outline only. Runtime reads config/config.toml via Python tomllib.
+# Use config/config.example.toml as the executable template; no YAML dependency.
+mode: DRY_RUN
+providers:
+  bandwagon:
+    enabled: true
+  dmit:
+    enabled: true
+  vmiss:
+    enabled: true
+  vps:
+    enabled: true
+  apple:
+    enabled: true
+    # Set an actual official region and SKU before enabling an inventory target.
+    region: null
+    targets: []
+    interval_seconds: 60
+email:
+  enabled: false
+  recipient: you@example.com
+# No price/budget filter, account secret, cookie, or final-order setting.
