@@ -24,6 +24,7 @@ enabled = true
 enabled = true
 [providers.vmiss]
 enabled = true
+interval_seconds = 900
 [providers.vps]
 enabled = true
 [providers.apple]

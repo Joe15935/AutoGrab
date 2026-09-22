@@ -11,10 +11,11 @@ from uuid import UUID, uuid4
 
 MAX_FRAME_BYTES = 65536
 COMMANDS = frozenset({"PING", "GET_STATUS", "DISARM", "OPEN_PRODUCT", "START_DRY_RUN",
-                      "START_CHECKOUT", "RESUME_INTENT", "CANCEL_INTENT"})
+                      "START_CHECKOUT", "RESUME_INTENT", "CANCEL_INTENT",
+                      "ORDER_PRECHECK", "SUBMIT_ORDER", "RECONCILE_ORDER"})
 EVENTS = frozenset({"EDGE_READY", "PAGE_OPENED", "PRODUCT_VERIFIED", "CART_READY",
                    "CHECKOUT_READY", "ORDER_CREATED", "INVOICE_FOUND", "PAYMENT_READY",
-                   "LOGIN_REQUIRED", "HUMAN_CHALLENGE_REQUIRED", "SOLD_OUT", "SITE_CHANGED", "FAILED"})
+                   "LOGIN_REQUIRED", "HUMAN_CHALLENGE_REQUIRED", "SOLD_OUT", "SITE_CHANGED", "FAILED", "ORDER_OBSERVATION"})
 CONTROLS = frozenset({"PING", "GET_STATUS", "DISARM"})
 ENVELOPE = frozenset({"version", "type", "message_id", "command_id", "intent_id",
                       "provider", "product_id", "timestamp", "payload"})
@@ -217,6 +218,13 @@ def _validate(message, *, direction=None, fresh=True):
     payload = message["payload"]
     if type(payload) is not dict:
         raise ProtocolError("PAYLOAD_INVALID")
+    if kind in {"ORDER_PRECHECK", "SUBMIT_ORDER", "RECONCILE_ORDER"}:
+        from .order_protocol import validate_order_command
+        return validate_order_command(message)
+    if kind == "ORDER_OBSERVATION":
+        from .order_protocol import validate_observation
+        validate_observation(payload, message["provider"])
+        return message
     if kind in COMMANDS:
         if kind in CONTROLS | {"CANCEL_INTENT"}:
             if payload:

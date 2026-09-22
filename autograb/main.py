@@ -49,6 +49,8 @@ def parser():
     register_commands(commands)
     from autograb.edge_cli import register_commands as register_edge_commands
     register_edge_commands(commands)
+    from autograb.order_cli import register_commands as register_order_commands
+    register_order_commands(commands)
     return p
 
 
@@ -66,7 +68,7 @@ async def run(args, config):
     notifier = EmailNotifier(load_setup(config.root, base=config.smtp))
     with ProcessLock(config.root / "data/autograb.lock"), Store(config.root / "data/autograb.sqlite3") as store:
         recovered = store.recover_interrupted()
-        log.write("START", version="0.4.0a0", database="OK", email="CONFIGURED" if notifier.configured else "NOT_CONFIGURED", recovered_events=recovered)
+        log.write("START", version="0.5.0a0", database="OK", email="CONFIGURED" if notifier.configured else "NOT_CONFIGURED", recovered_events=recovered)
         if args.command in {"status", "history"}:
             print(json.dumps(store.summary() if args.command == "status" else store.list_events(), ensure_ascii=False, indent=2))
             return 0
@@ -182,6 +184,9 @@ def main():
     try:
         config = Config.load(args.root.resolve())
         config.prepare()
+        if getattr(args, "order_core", False):
+            from autograb.order_cli import run_order
+            return asyncio.run(run_order(args, config))
         if args.command in {"apple-configure", "apple-catalog-refresh"}:
             from autograb.apple_cli import run_apple
             return asyncio.run(run_apple(args, config))

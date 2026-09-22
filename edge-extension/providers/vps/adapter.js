@@ -41,9 +41,18 @@
   function login() {
     return challenge() === "REQUIRED" ? "UNKNOWN" : all('input[type="password"]').length ? "REQUIRED" : "UNKNOWN";
   }
+  function orderBoundary() {
+    if (location.origin !== "https://vps.hosting" || !/^\/cart\/[a-z0-9-]+\/$/.test(location.pathname)) return false;
+    const form = document.querySelector("form#cartdetails"), forms = document.querySelector("form#cartforms");
+    if (!visible(form) || form.getAttribute("method")?.toLowerCase() !== "post" || form.getAttribute("action") !== "" || form.hasAttribute("onsubmit") || forms?.getAttribute("action") !== "?cmd=cart") return false;
+    const make = form.querySelectorAll('input[type="hidden"][name="make"]');
+    const buttons = all('button[type="submit"],input[type="submit"]').filter(n => text(n) === "Order Now" && n.form === null && /^submitOrder\(\);\s*return false;?$/.test(n.getAttribute("onclick") || ""));
+    return make.length === 1 && make[0].value === "order" && buttons.length === 1;
+  }
   function stage() {
     if (challenge() === "REQUIRED") return "HUMAN_CHALLENGE";
     if (!url(location.href) || window.top !== window) return "UNKNOWN";
+    if (orderBoundary()) return "REAL_ORDER_BOUNDARY";
     if (login() === "REQUIRED") return "LOGIN";
     return family(url(location.href)) ? "PRODUCT" : "UNKNOWN";
   }
@@ -71,7 +80,7 @@
   const refuse = async () => ({...(guard() || result(false, "ADAPTER_READ_ONLY")), action: "NONE"});
   const api = {
     readonly: true,
-    async detectPage(value) { expected(value); return guard() || result(stage() === "PRODUCT", stage() === "PRODUCT" ? "PAGE_OPENED" : "PAGE_UNVERIFIED"); },
+    async detectPage(value) { expected(value); return guard() || result(["PRODUCT", "REAL_ORDER_BOUNDARY"].includes(stage()), stage() === "REAL_ORDER_BOUNDARY" ? "REAL_ORDER_BOUNDARY" : stage() === "PRODUCT" ? "PAGE_OPENED" : "PAGE_UNVERIFIED"); },
     async detectChallenge() { return guard() || result(true, "NO_CHALLENGE"); },
     async detectLogin() { return guard() || result(false, "LOGIN_UNVERIFIED"); },
     verifyProduct,

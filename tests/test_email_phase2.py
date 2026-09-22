@@ -293,13 +293,69 @@ class PaymentEmailTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "SMTP_ACCEPTED")
         messages = [call.args[0] for call in smtp.send_message.call_args_list]
         self.assertEqual(messages[0]["Message-ID"], messages[1]["Message-ID"])
-        self.assertEqual(messages[0]["Subject"], "🚨🚨 [PAY NOW] BandwagonHost VPS 已进入付款阶段")
+        self.assertEqual(messages[0]["Subject"], "🚨🚨 [PAY NOW] AutoGrab Payment Ready")
         body = messages[0].get_content()
         for expected in (URL, "Login may be required", "RESTOCK", "USD 49.99", "Annually", "Order ID:\n789", "Invoice ID:\n456",
                          "Status:\nPAYMENT_READY", "3.000 sec", "Payment deadline:\nUNKNOWN", "AutoGrab has not submitted payment"):
             self.assertIn(expected, body)
         self.assertNotIn("127.0.0.1", body)
         self.assertNotIn(SECRET, body)
+
+    async def test_dmit_payment_ready_uses_verified_price_phone_link_and_recorded_times(self):
+        product = replace(PRODUCT, provider="dmit", name="Synthetic monthly VPS", product_url="https://www.dmit.io/cart.php")
+        url = "https://www.dmit.io/viewinvoice.php?id=456"
+        value = intent()
+        value.update(provider="dmit", payment_url=url, order_created_at="2026-09-22T01:00:02+00:00",
+                     payment_ready_at="2026-09-22T01:00:05+00:00", amount="USD 999.99")
+        value["verification"].update(provider="dmit", merchant="www.dmit.io", payment_url=url,
+                                     amount="USD 79.90", amount_cents=7990, currency="USD", billing="Monthly", login_required=True)
+        event = {**EVENT, "provider":"dmit", "created_at":"2026-09-22T01:00:00+00:00"}
+        smtp = client()
+        with patch("smtplib.SMTP_SSL", return_value=smtp):
+            result = await EmailNotifier(config()).send_payment_ready(product, event, value, {})
+        self.assertEqual(result.status, "SMTP_ACCEPTED")
+        message = smtp.send_message.call_args.args[0]
+        self.assertEqual(message["Subject"], "🚨🚨 [PAY NOW] AutoGrab Payment Ready")
+        body = message.get_content()
+        for expected in ("Provider:\nDMIT", "Price:\nUSD 79.90", "Billing:\nMonthly", "Login required.",
+                         "Official payment URL:\n" + url, "Order created:\n2026-09-22T01:00:02.000+00:00",
+                         "Payment ready:\n2026-09-22T01:00:05.000+00:00", "5.000 sec (wall-clock)"):
+            self.assertIn(expected, body)
+        for forbidden in ("127.0.0.1", "localhost", "USD 999.99", "BandwagonHost"):
+            self.assertNotIn(forbidden, body)
+        self.assertEqual(safe_invoice_url(url, "456", "dmit"), url)
+        self.assertEqual(safe_invoice_url(URL, "456", "dmit"), "UNAVAILABLE")
+
+    async def test_unknown_or_reversed_times_are_not_invented_from_intent_creation(self):
+        for detected in ("2026-09-22T01:00:00", "2026-09-22T01:00:10+00:00"):
+            value = {**intent(), "created_at":"2026-09-22T01:00:01+00:00",
+                     "submit_started_at":"2026-09-22T01:00:02+00:00", "payment_ready_at":"2026-09-22T01:00:05+00:00"}
+            smtp = client()
+            with patch("smtplib.SMTP_SSL", return_value=smtp):
+                result = await EmailNotifier(config()).send_payment_ready(PRODUCT, {**EVENT,"created_at":detected}, value, {})
+            self.assertEqual(result.status, "SMTP_ACCEPTED")
+            body = smtp.send_message.call_args.args[0].get_content()
+            self.assertIn("Order created:\nUNKNOWN", body)
+            self.assertIn("Detection → Payment Ready:\nUNKNOWN", body)
+
+    async def test_provider_and_simulated_event_cannot_enter_real_payment_template(self):
+        for product, event, evidence_provider in ((replace(PRODUCT,provider="dmit"), EVENT, "bandwagon"),
+                                                  (PRODUCT, {**EVENT,"provider":"dmit"}, "bandwagon"),
+                                                  (PRODUCT, {**EVENT,"simulated":True}, "bandwagon"),
+                                                  (PRODUCT, EVENT, "dmit")):
+            value = intent(); value["verification"]["provider"] = evidence_provider
+            with patch("smtplib.SMTP_SSL") as smtp:
+                result = await EmailNotifier(config()).send_payment_ready(product, event, value, {})
+            self.assertEqual(result.error_code, "PAYMENT_NOT_VERIFIED")
+            smtp.assert_not_called()
+        smtp = client()
+        with patch("smtplib.SMTP_SSL", return_value=smtp):
+            result = await EmailNotifier(config()).send_event(PRODUCT, {**EVENT,"simulated":True}, {}, {"status":"DRY_RUN_BOUNDARY"})
+        self.assertEqual(result.status, "SMTP_ACCEPTED")
+        message = smtp.send_message.call_args.args[0]
+        self.assertIn("DRY RUN", message["Subject"])
+        self.assertNotIn("PAY NOW", message["Subject"])
+        self.assertIn("No order or payment was created", message.get_content())
 
     async def test_all_payment_evidence_flags_required_before_transport(self):
         for key in ("merchant_verified", "product_verified", "amount_present", "payment_page_verified", "unpaid_verified"):
@@ -354,6 +410,13 @@ class PaymentEmailTests(unittest.IsolatedAsyncioTestCase):
         body = smtp.send_message.call_args.args[0].get_content()
         self.assertIn("LOGIN_REQUIRED", body)
         self.assertIn("New order creation is blocked", body)
+        with patch("smtplib.SMTP_SSL", return_value=smtp):
+            await EmailNotifier(config()).send_edge_human_required("edge:00000000-0000-4000-8000-000000000000:1", "LOGIN_REQUIRED")
+        body = smtp.send_message.call_args.args[0].get_content()
+        self.assertIn("订单结果以已保存的状态和商家核实结果为准", body)
+        self.assertIn("自动付款保持关闭", body)
+        self.assertNotIn("没有创建订单", body)
+        self.assertNotIn("本次仅为 DRY RUN", body)
 
     async def test_unknown_session_notice_refused_and_unconfigured_isolated(self):
         with patch("smtplib.SMTP_SSL") as smtp:

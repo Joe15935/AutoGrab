@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AutoGrab Edge Companion",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Use normal Edge for provider-specific dry runs and read-only handoff, stopping before order or payment.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA19W5gKSCkIa2ygkCkJIVlUO7YYlF7egIlTIG+XZm5e3CbWg4Gh7dxZOrHu+CTwwW4zK8sVeD0UYt/wzWIGdIRkFXfk0h7jNjIkb+SmocPdS38w7GW6TGEbKA1zawsiAGtbQxIxBWoEiqXcPD4P6PuX7JLWMxyL3wuV70c8zZ/flhUm3MW116edEm7zDM33NWK7HGuL1i8TZ4W3KvFAH2IlqG0cCKm/clHalJeg0Th4xPzdlCX7pqjSBZvXsmSmGXYPg26yf7tgIzmoB80xY9ekEIAYM5fPKW7WuqnJOIJ/HpsEq82XY8P7sb7HLbSxonsHoua21KnW+8SbIfQ6VFVwIDAQAB",
   "permissions": [
@@ -34,6 +34,7 @@
       ],
       "js": [
         "providers/bandwagon/adapter.js",
+        "order-adapter.js",
         "content.js"
       ],
       "run_at": "document_idle",
@@ -45,6 +46,7 @@
       ],
       "js": [
         "providers/dmit/adapter.js",
+        "order-adapter.js",
         "content.js"
       ],
       "run_at": "document_idle",

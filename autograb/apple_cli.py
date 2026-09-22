@@ -87,10 +87,10 @@ def save_target(root, settings):
     return path
 
 
-def configure(config, *, region=None, input_fn=input, output=print, catalog_factory=AppleCatalog):
+def configure(config, *, region=None, input_fn=input, output=print, catalog_factory=AppleCatalog, budget=None):
     settings = dict(config.providers.get("apple",{}))
     region = region or _choose("Apple Store 地区",[(REGION_LABELS[k],k) for k in REGIONS],input_fn=input_fn,output=output)
-    catalog = catalog_factory(region,progress=lambda _url:output("正在读取 Apple 官方目录…"))
+    catalog = catalog_factory(region,progress=lambda _url:output("正在读取 Apple 官方目录…"), **({"budget":budget} if budget is not None else {}))
     categories = catalog.categories()
     category = _choose("商品类别（来自当前官网）",[(key,key) for key in categories],input_fn=input_fn,output=output)
     products = catalog.refresh([category])
@@ -139,13 +139,19 @@ def configure(config, *, region=None, input_fn=input, output=print, catalog_fact
 
 
 async def run_apple(args, config):
+    from autograb.core.rate_budget import ProviderRateBudget
+    with ProcessLock(config.root / "data/autograb.lock"), Store(config.root / "data/autograb.sqlite3") as store:
+        return await _run_apple(args, config, store, ProviderRateBudget(store))
+
+
+async def _run_apple(args, config, store, budget):
     from autograb.multi_cli import process_opportunity
     from autograb.notifications.email import EmailNotifier
     from autograb.notifications.setup import load_setup
     if args.command == "apple-configure":
-        settings, products = await asyncio.to_thread(configure,config,region=args.region)
+        settings, products = await asyncio.to_thread(configure,config,region=args.region,budget=budget)
         # This is a user-selected target check, not a fabricated opportunity.
-        provider = AppleProvider({**settings,"catalog_enabled":False})
+        provider = AppleProvider({**settings,"catalog_enabled":False}, budget=budget)
         observed = await provider.discover_products()
         print(json.dumps({"event":"APPLE_TARGET_CONFIGURED","inventory_status":provider.status,
             "inventory":provider.inventory,"orders_created":0,"payments":0},ensure_ascii=False))
@@ -155,20 +161,19 @@ async def run_apple(args, config):
         categories = args.category or settings.get("catalog_categories")
         if not region or not categories:
             raise AutoGrabError("APPLE_CATALOG_SCOPE_NOT_CONFIGURED")
-        products = await asyncio.to_thread(AppleCatalog(region).refresh,categories)
+        products = await asyncio.to_thread(AppleCatalog(region, budget=budget).refresh,categories)
         observed = []
-    with ProcessLock(config.root / "data/autograb.lock"), Store(config.root / "data/autograb.sqlite3") as store:
-        merged = merge_observations([*products,*observed],store.list_products())
-        snapshot = store.ingest(merged,source="APPLE_CATALOG_REFRESH")
-        if args.command == "apple-catalog-refresh":
-            notifier = EmailNotifier(load_setup(config.root,base=config.smtp))
-            provider = AppleProvider(settings)
-            for event in snapshot["events"]:
-                await process_opportunity(store,provider,event,notifier,prepare_checkout=False)
-        else:
-            for event in snapshot["events"]:
-                store.update_event(event["id"],"RECORDED_ONLY",{"reason":"EXPLICIT_APPLE_CONFIGURATION"})
-        print(json.dumps({"event":"APPLE_CATALOG_REFRESH","catalog_count":len(products),
-            "opportunities":sum(bool(e["details"].get("opportunities")) for e in snapshot["events"]),
-            "inventory_checked":bool(observed),"orders_created":0,"payments":0},ensure_ascii=False))
+    merged = merge_observations([*products,*observed],store.list_products())
+    snapshot = store.ingest(merged,source="APPLE_CATALOG_REFRESH")
+    if args.command == "apple-catalog-refresh":
+        notifier = EmailNotifier(load_setup(config.root,base=config.smtp))
+        provider = AppleProvider(settings, budget=budget)
+        for event in snapshot["events"]:
+            await process_opportunity(store,provider,event,notifier,prepare_checkout=False)
+    else:
+        for event in snapshot["events"]:
+            store.update_event(event["id"],"RECORDED_ONLY",{"reason":"EXPLICIT_APPLE_CONFIGURATION"})
+    print(json.dumps({"event":"APPLE_CATALOG_REFRESH","catalog_count":len(products),
+        "opportunities":sum(bool(e["details"].get("opportunities")) for e in snapshot["events"]),
+        "inventory_checked":bool(observed),"orders_created":0,"payments":0},ensure_ascii=False))
     return 0

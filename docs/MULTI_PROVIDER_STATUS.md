@@ -1,22 +1,61 @@
-# Provider closure alpha: evidence and limits
+# Provider capabilities: implementation, evidence and limits
 
-Observed 2026-09-22. **PARTIAL. Experimental alpha; no order or payment creation.**
-LIVE OFF, ARM OFF. Levels identify actual observed capability, not a promise that
-all automated adapters support the same flow.
+Evidence retained from 2026-09-22; updated for the v0.5 alpha implementation.
+**PARTIAL. Experimental alpha. Real orders: 0. Payments: 0.** DRY_RUN by default,
+LIVE OFF, ARM OFF, REAL_ORDER_SMOKE_TEST_ARMED=false. Prior BWH/DMIT L5 evidence is
+frozen; this sprint did not repeat their ordinary cart/checkout acceptance flows.
 
-| Provider | Level | Real-site result |
+| Provider | IMPLEMENTED | REAL-SITE VERIFIED |
 |---|---|---|
-| BandwagonHost | L5 | Prior signed-in checkout PASS; original 48 ordinary products retained; not rerun this sprint |
-| DMIT | L5 manual flow | Exact PID 266 cart survived refresh; signed-in checkout PASS; companion mutation remains disabled |
-| VMISS | L0 partial | Official store identified; observed Error 1015 rate limit; no live product baseline or checkout |
-| V.PS | L3 | 66 public plans; normal Edge page verified; **ORDER NOW = REAL ORDER CREATION**, so no submission |
-| Apple | L3 | Current official catalogue, target wizard and research pickup inventory PASS; Bag/Checkout blocked |
+| BandwagonHost | L5 assistance; shared L6/L7 experimental adapter | L5 signed-in checkout PASS; original 48 ordinary products retained; L6/L7 NO |
+| DMIT | Public discovery and read-only L5 stages; shared L6/L7 experimental adapter | L5 manual flow: exact PID 266 cart survived refresh, signed-in checkout PASS; L6/L7 NO |
+| VMISS | Experimental parser/read-only adapter and persisted rate budget | Official entry only; BLOCKED by Error 1015; no reliable live product baseline or checkout |
+| V.PS | Discovery/read-only pre-order configuration | L4 REAL ORDER BOUNDARY VERIFIED; 66 public plans; Order Now was not clicked |
+| Apple | Catalogue, target wizard, pickup, request budgets; partial read-only Edge purchase observation | Inventory/catalogue/wizard/research email PASS; Bag BLOCKED; exact bag contents, Add to Bag and checkout NO |
 
 L0 discovery, L1 baseline, L2 opportunity detection, L3 normal Edge opening,
-L4 cart, L5 checkout. L6 order and L7 payment readiness are outside this release.
+L4 cart / pre-order boundary, L5 checkout, L6 real order created, L7 payment ready.
+Implemented L6/L7 code does not raise a provider's verified level.
 VMISS L0 partial means its official entry is known, not that live inventory was
 retrieved. L2 transitions are regression-verified; no artificial restock or launch
 is described as a real opportunity.
+
+## Shared L6/L7 Core — IMPLEMENTED, experimental
+
+The existing PurchaseRunner, PurchaseIntent, SQLite, Native Messaging, SMTP and
+guards now support order precheck, persisted nonce, ORDER_UNCERTAIN, reconciliation,
+order/invoice/payment-link search, PAYMENT_READY and notification claims. BWH and
+DMIT share this lifecycle; provider-specific Edge code supplies page contracts.
+No second order engine or new production dependency was added.
+
+**BWH/DMIT L6/L7 REAL-SITE VERIFIED: NO.** Their exact no-charge submit contract
+currently exists only in offline experimental DOM fixtures. Neither current
+merchant checkout has independently demonstrated that contract. A visible Complete
+Order button, login or unchecked terms cannot prove no charge; account credit or
+saved payment methods may debit funds while creating an order. Real submission is
+therefore blocked, including when an operator selects the separate smoke entry
+point. Test markers must not be added to live pages to manufacture proof.
+
+Ordinary monitoring ARM grants no smoke permission. Explicit confirmation for one
+intent creates an ephemeral lease of at most 60 seconds, consumed once and never
+restored from storage. It additionally requires fresh product/amount/billing,
+session, no-charge and SMTP preflight evidence. The nonce, intent and submission
+time are committed before dispatch; kill/expiry is checked again immediately
+before the action. No real order smoke test was performed.
+
+Crash/disconnect/timeout after that marker preserves ORDER_UNCERTAIN. Recovery
+only looks up the same provider/product/intent, then validates matching order and
+invoice evidence. Strong NO_ORDER_FOUND needs a complete matching search scope
+and time window; even that does not authorize automatic replacement submission.
+Unknown account state never releases the uncertain intent or fabricates absence.
+
+PAYMENT_READY needs actual matching order/invoice IDs, an unpaid official invoice
+page and exact product/amount. A URL alone is insufficient. The implemented future
+email uses **🚨🚨 [PAY NOW] AutoGrab Payment Ready**, includes billing and lifecycle
+times, and links to the merchant HTTPS invoice for phone use with login guidance.
+Its once-only claim is persisted before SMTP; ambiguous delivery does not resend
+automatically. Offline email/receipt fixtures remain labelled simulated, and no
+real L7 notification is claimed.
 
 ## DMIT
 
@@ -69,6 +108,11 @@ is described as a real opportunity.
   needs fresh normal-page evidence and an explicit operator action after access
   is restored. A denied/limited page never qualifies as normal-page evidence.
 - Baseline, product configuration, cart and checkout remain UNVERIFIED.
+- VMISS now uses the shared persisted catalogue budget, at least 15 minutes
+  between admitted requests. One request can parse every product on its page;
+  additional required catalogue pages share the same budget. Incomplete scans
+  cannot initialize or replace a trusted baseline. This implementation does not
+  establish a reliable live baseline while the store remains rate-limited.
 
 ## V.PS: exact order boundary
 
@@ -90,6 +134,8 @@ explicitly defines this one-step submission as immediate order creation. The
 also describes checkout within that single flow. These combined facts establish
 the boundary; the function name alone would not.
 
+This is **L4 / PRE_ORDER_CONFIGURATION → REAL_ORDER_BOUNDARY**, the highest safe
+verified stage with zero orders; it is not a failed attempt to reach L5.
 The button was not clicked, intercepted or submitted. No response, invoice or
 payment was generated to test this conclusion. A submit-event preventDefault
 alone would not reliably block native `form.submit()`, so no such unsafe probe
@@ -128,10 +174,37 @@ baseline; restock requires an explicit inventory observation.
   name, capacity, colour and price. Its own fulfillment GET returned 541;
   AppleCare choices and Add to Bag stayed disabled after selecting no trade-in.
   No button was forced enabled; no cart mutation was attempted.
+- **Edge implementation PARTIAL/read-only:** the adapter recognizes the existing
+  same-origin fulfillment resource's HTTP 541 metadata without exporting query
+  values or creating another request, and reports APPLE_BAG_BLOCKED. Disabled
+  Add to Bag reports unavailability without inventing a 541 response. Product and
+  Bag page stages can be observed, but URL matching or a Bag heading never proves
+  selected SKU or cart identity. There is no verified live Bag fixture; Add to Bag
+  and checkout actions remain disabled. No Python protected-purchase API imitation
+  or retries of the blocked page were added.
 - PREORDER_OPEN, ORDER_OPEN and DELIVERY_AVAILABLE remain unverified. The current
   catalogue's `comingSoon:false` is insufficient proof of orderability. Neither
   titles nor pickup availability create those signals. Watch case/band combinations
   are not enabled as verified configurations.
+
+## Durable request budgets
+
+ProviderRateBudget is a small addition to private SQLite, scoped by provider,
+region and endpoint. It records blocked_until, normalized retry_after,
+consecutive_limits, last_success and last_failure, and atomically claims one
+request. Valid delay-seconds or HTTP-date Retry-After is a minimum: longer server
+waits take precedence and the local conservative floor is not shortened. Limited
+or blocked routes start with a 15-minute fallback, doubling after repeated limits
+up to a 24-hour fallback. After cooldown only one probe is admitted; an interrupted
+probe enters cooldown and restarting preserves the wait.
+
+Apple pickup uses a minimum 60-second interval, batches relevant SKUs per store,
+rotates store groups and separates budgets by region/endpoint. 541/429, failed
+requests and schema errors remain UNKNOWN and preserve trusted comparison history
+without calling it fresh stock. VMISS uses its slower shared catalogue budget.
+These are public HTTP request budgets, not authorization to retry Edge cart/order
+actions; blocked Edge pages require normal-page evidence and explicit same-intent
+resumption. No brute force, alternate browser, IP change or cookie technique is used.
 
 ## Reuse and implementation boundary
 
@@ -142,14 +215,19 @@ page-marker reference only; code copied: NO; its browser/challenge approach was
 not adopted. See [third-party notices](../THIRD_PARTY_NOTICES.md).
 
 The existing Core, SQLite, SMTP, protocol, Native Messaging and Bandwagon adapter
-remain in use. There is no new dependency or order engine. New provider mutation
-adapters remain disabled. The existing controller only gained precise pause-code
-handling; HTTP denial is latched rather than repeatedly requested.
+remain in use. There is no new dependency or replacement order engine. BWH/DMIT
+experimental order methods require the unverified merchant no-charge contract;
+DMIT cart mutations and other new provider purchase actions remain disabled.
+The controller preserves precise pause codes and submission uncertainty. Budgeted
+public reads admit only a cooldown probe; other latched HTTP denials stay paused.
 
 ## Verification and publication
 
 Targeted regressions preserve observed invalid/pending DMIT configuration, VMISS
 1015, unknown-period reads and Apple official catalogue/configuration semantics.
+New offline checks cover L6/L7 nonce/quote identity, crash recovery and no replay,
+separate smoke authority, payment email, persisted cooldown/Retry-After and Apple
+UNKNOWN/blocked Bag behavior. Their results do not certify real merchant orders.
 Fixture success is not real checkout evidence. Release checks are `./test.sh`,
 `node --test edge-extension/tests/*.test.mjs`, `uv build`, source/history gitleaks
 and independent scans of the source ZIP, wheel and source distribution.

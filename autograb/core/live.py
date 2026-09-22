@@ -263,3 +263,72 @@ class LiveGuard:
             "order_creation": "LIVE_ORDER_CREATION_ENABLED" if armed else "DISABLED",
             "automatic_payment": "DISABLED",
         }
+
+
+class RealOrderSmokeGuard(LiveGuard):
+    """A separate, process-local, one-intent, one-use order lease.
+
+    Ordinary monitoring ARM cannot grant this permission. No config/environment
+    value or persisted file restores it. This class never authorizes payment.
+    """
+    def __init__(self, data_dir, **kwargs):
+        provider = kwargs.pop('provider', 'bandwagon')
+        if provider not in {'bandwagon', 'dmit'}:
+            raise ValueError('Unsupported smoke provider')
+        super().__init__(data_dir, provider='bandwagon', **kwargs)
+        self.provider = provider
+        self._smoke_intent = None
+        self._smoke_nonce = None
+        self._smoke_precheck = None
+        self._smoke_issued = self._smoke_expires = None
+
+    def disarm(self, reason='MANUAL_DISARM'):
+        super().disarm(reason)
+        self._smoke_intent = self._smoke_nonce = self._smoke_precheck = None
+        self._smoke_issued = self._smoke_expires = None
+
+    def arm_smoke(self, preflight, intent_id, *, confirmed=False, duration=timedelta(seconds=60)):
+        from uuid import UUID
+        self._smoke_intent = self._smoke_nonce = self._smoke_precheck = None
+        self.disarm()
+        if confirmed is not True:
+            raise AutoGrabError('REAL_ORDER_SMOKE_TEST_NOT_ARMED')
+        if not isinstance(intent_id, str) or str(UUID(intent_id)) != intent_id:
+            raise AutoGrabError('SMOKE_INTENT_INVALID')
+        if not isinstance(duration, timedelta) or not timedelta(0) < duration <= timedelta(seconds=60):
+            raise AutoGrabError('SMOKE_EXPIRY_INVALID')
+        super().arm(preflight, duration=duration)
+        self._smoke_intent = intent_id
+        return self.status()
+
+    def issue_permit(self, intent_id, precheck_id, preflight):
+        from uuid import UUID, uuid4
+        self.assert_can_submit(preflight)
+        if self._smoke_intent != intent_id or self._smoke_nonce is not None:
+            raise AutoGrabError('REAL_ORDER_SMOKE_TEST_NOT_ARMED')
+        if str(UUID(precheck_id)) != precheck_id:
+            raise AutoGrabError('ORDER_PRECHECK_INVALID')
+        if signal_present(self.data_dir, 'stop_monitoring'):
+            self.disarm('KILL_SWITCH'); raise AutoGrabError('KILL_SWITCH_ACTIVE')
+        self._smoke_nonce, self._smoke_precheck = str(uuid4()), precheck_id
+        self._smoke_issued = self.utc_clock().astimezone(timezone.utc).isoformat()
+        self._smoke_expires = self._armed_until.isoformat()
+        return {'nonce': self._smoke_nonce, 'precheck_id': precheck_id,
+                'issued_at': self._smoke_issued,
+                'expires_at': self._smoke_expires, 'real_order_smoke_test_armed': True}
+
+    def assert_permit(self, intent_id, permit, preflight):
+        self.assert_can_submit(preflight)
+        if (self._smoke_intent != intent_id or self._smoke_nonce is None
+                or permit.get('nonce') != self._smoke_nonce or permit.get('precheck_id') != self._smoke_precheck
+                or permit.get('issued_at') != self._smoke_issued or permit.get('expires_at') != self._smoke_expires
+                or permit.get('real_order_smoke_test_armed') is not True):
+            raise AutoGrabError('REAL_ORDER_SMOKE_TEST_NOT_ARMED')
+        if signal_present(self.data_dir, 'stop_monitoring'):
+            self.disarm('KILL_SWITCH'); raise AutoGrabError('KILL_SWITCH_ACTIVE')
+
+    def status(self):
+        result = super().status()
+        result['REAL_ORDER_SMOKE_TEST_ARMED'] = bool(result['armed'] and self._smoke_intent and self._smoke_nonce is None)
+        result['automatic_payment'] = 'DISABLED'
+        return result

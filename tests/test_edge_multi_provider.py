@@ -139,7 +139,11 @@ class MultiProviderPersistenceTests(unittest.TestCase):
         connection = self.store.connection
         before = dict(connection.execute("SELECT rowid,* FROM purchase_intents").fetchone())
         EdgeBroker(self.store)
-        self.assertEqual(dict(connection.execute("SELECT rowid,* FROM purchase_intents").fetchone()), before)
+        after = dict(connection.execute("SELECT rowid,* FROM purchase_intents").fetchone())
+        self.assertEqual({key: after[key] for key in before}, before)
+        added = {'submission_nonce', 'order_precheck_json', 'order_created_at', 'payment_ready_at', 'notification_claimed_at'}
+        self.assertEqual(set(after) - set(before), added)
+        self.assertTrue(all(after[key] is None for key in added))
         self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
         self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
         self.assertEqual(connection.execute("SELECT * FROM intent_view").fetchone()[0], identity)

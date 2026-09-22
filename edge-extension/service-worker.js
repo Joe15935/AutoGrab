@@ -1,4 +1,5 @@
-import {EXTENSION_VERSION, HOST, allowedOrigin, envelope, sanitizeURL, validateEnvelope} from "./protocol.js";
+import {EXTENSION_VERSION, HOST, ORDER_COMMANDS, allowedOrigin, envelope, sanitizeURL, validateEnvelope} from "./protocol.js";
+import {handleOrderCommand} from "./order-flow.js";
 
 const STORAGE_KEY = "autograbCompanionV1";
 const sameProduct = (left, right) => ["name", "url", "period", "cents", "currency"].every(key => left[key] === right[key]);
@@ -19,23 +20,27 @@ export class CompanionController {
     this.active = null; this.port = null; this.connected = false; this.connectionId = null;
     this.lastHeartbeat = null; this.lastError = null; this.seen = []; this.pumping = false; this.revision = 0;
     this.normalObserved = false;
+    this.orderBusy = false; this.orderNonces = [];
   }
   async restore() {
     const saved = (await this.api.storage.local.get(STORAGE_KEY))[STORAGE_KEY];
     if (saved?.version === 1) {
       this.seen = Array.isArray(saved.seen) ? saved.seen.slice(-256) : [];
       this.active = saved.active || null;
+      this.orderNonces = Array.isArray(saved.orderNonces) ? saved.orderNonces.slice(-256) : [];
       if (this.active && !this.active.provider) this.active.provider = "bandwagon";
       if (this.active && !TERMINAL.has(this.active.state)) this.active.state = "PAUSED_RESTART";
+      if (this.active) this.active.order_precheck = null;
+      if (this.active?.order_journal) this.active.state = "ORDER_UNCERTAIN";
       await this.save();
     }
   }
   async save() {
-    await this.api.storage.local.set({[STORAGE_KEY]: {version: 1, active: this.active, seen: this.seen}});
+    await this.api.storage.local.set({[STORAGE_KEY]: {version: 1, active: this.active, seen: this.seen, orderNonces: this.orderNonces}});
   }
   status() {
     const a = this.active;
-    return {installed: true, connected: this.connected, version: EXTENSION_VERSION, last_heartbeat: this.lastHeartbeat, tab_id: a?.tab_id ?? null, intent_id: a?.intent_id ?? null, provider: a?.provider || "bandwagon", product_id: a?.product_id ?? null, state: a?.state || "IDLE", checkpoint: a?.checkpoint || "NONE", challenge: a?.challenge || "UNKNOWN", login: a?.login || "UNKNOWN", mutation_uncertain: a?.journal?.status === "DISPATCHED", error: this.lastError, live: "OFF"};
+    return {installed: true, connected: this.connected, version: EXTENSION_VERSION, last_heartbeat: this.lastHeartbeat, tab_id: a?.tab_id ?? null, intent_id: a?.intent_id ?? null, provider: a?.provider || "bandwagon", product_id: a?.product_id ?? null, state: a?.state || "IDLE", checkpoint: a?.checkpoint || "NONE", challenge: a?.challenge || "UNKNOWN", login: a?.login || "UNKNOWN", mutation_uncertain: a?.journal?.status === "DISPATCHED" || a?.order_journal?.status === "DISPATCHED", error: this.lastError, live: "OFF"};
   }
   event(type, payload, commandId = this.active?.command_id, identity = this.active) {
     if (!this.connected || !this.port) return false;
@@ -46,7 +51,7 @@ export class CompanionController {
     const a = this.active;
     const payload = {version: EXTENSION_VERSION, stage: a?.state || "IDLE", challenge: a?.challenge || "UNKNOWN", login: a?.login || "UNKNOWN"};
     if (Number.isInteger(a?.tab_id)) payload.tab_id = a.tab_id;
-    if (a?.journal?.status === "DISPATCHED") payload.mutation_uncertain = true;
+    if (a?.journal?.status === "DISPATCHED" || a?.order_journal?.status === "DISPATCHED") payload.mutation_uncertain = true;
     this.event("EDGE_READY", payload, commandId, null);
     this.lastHeartbeat = new Date(this.now()).toISOString();
   }
@@ -58,6 +63,8 @@ export class CompanionController {
   async disconnected() {
     this.connected = false; this.port = null; this.revision += 1; this.normalObserved = false;
     if (this.active && !TERMINAL.has(this.active.state)) this.active.state = "PAUSED_DISCONNECTED";
+    if (this.active) this.active.order_precheck = null;
+    if (this.active?.order_journal) this.active.state = "ORDER_UNCERTAIN";
     await this.save();
   }
   async handle(message) {
@@ -77,6 +84,7 @@ export class CompanionController {
       await this.save(); this.ready(message.command_id); return {accepted: true};
     }
     if (message.type === "START_CHECKOUT") { this.event("FAILED", {code: "LIVE_NOT_ENABLED", stage: "DISARMED"}, message.command_id, message); return {accepted: false, code: "LIVE_NOT_ENABLED"}; }
+    if (ORDER_COMMANDS.has(message.type)) return handleOrderCommand(this, message);
     if (message.provider !== "bandwagon" && message.payload.product) {
       const url = new URL(message.payload.product.url);
       // Opening an add URL is already a mutation, even without a DOM click.
@@ -84,11 +92,14 @@ export class CompanionController {
     }
     if (message.type === "CANCEL_INTENT") {
       if (!this.matches(message)) return this.reject(message, "INTENT_MISMATCH");
-      this.revision += 1; this.active.state = "CANCELLED"; this.active.command_id = message.command_id;
-      await this.save(); this.event("FAILED", {code: "CANCELLED", stage: "CANCELLED"}); return {accepted: true};
+      this.revision += 1;
+      const uncertainOrder = this.active.order_journal && !["ORDER_CREATED", "PAYMENT_READY"].includes(this.active.state);
+      this.active.state = uncertainOrder ? "ORDER_UNCERTAIN" : "CANCELLED"; this.active.command_id = message.command_id;
+      await this.save(); this.event("FAILED", {code: "CANCELLED", stage: this.active.state, ...(uncertainOrder ? {mutation_uncertain: true} : {})}); return {accepted: true};
     }
     if (message.type === "RESUME_INTENT") {
       if (!this.matches(message)) return this.reject(message, "INTENT_MISMATCH");
+      if (this.active.order_session) return this.reject(message, "ORDER_RECONCILE_REQUIRED");
       if (!["WAITING_FOR_HUMAN", "PAUSED_DISCONNECTED", "PAUSED_RESTART", "PAUSED_UNCERTAIN", "DISARMED", "FAILED"].includes(this.active.state)) return this.reject(message, "RESUME_NOT_ALLOWED");
       if (!this.normalObserved || this.active.challenge !== "NONE") return this.reject(message, "NORMAL_PAGE_NOT_VERIFIED");
       if (!sameProduct(message.payload.product, this.active.product)) return this.reject(message, "PRODUCT_MISMATCH");
@@ -124,17 +135,17 @@ export class CompanionController {
   matches(message) { return this.active && message.provider === (this.active.provider || "bandwagon") && message.intent_id === this.active.intent_id && message.product_id === this.active.product_id; }
   reject(message, code) { this.event("FAILED", {code, stage: "PAUSED"}, message.command_id, message); return {accepted: false, code}; }
   expected() { return {...this.active.product, product_id: this.active.product_id}; }
-  async read(operation = "detectPage") {
+  async read(operation = "detectPage", extra = {}) {
     const active = this.active, tabId = active.tab_id;
     const provider = active.provider || "bandwagon";
-    const request = {source: "AUTOGRAB_COMPANION", provider, operation, expected: this.expected()};
-    if (active.document_id) {
+    const request = {source: "AUTOGRAB_COMPANION", provider, operation, expected: this.expected(), ...extra};
+    if (active.document_id && !extra.order_context) {
       try { return await this.api.tabs.sendMessage(tabId, request, {documentId: active.document_id}); }
       catch { /* Only reads may discover a new document after navigation. */ }
     }
     const files = {bandwagon: "providers/bandwagon/adapter.js", dmit: "providers/dmit/adapter.js", vmiss: "providers/vmiss/adapter.js", vps: "providers/vps/adapter.js", apple: "providers/apple/adapter.js"};
     if (!Object.hasOwn(files, provider)) throw new Error("UNKNOWN_PROVIDER");
-    const results = await this.api.scripting.executeScript({target: {tabId}, files: [files[provider], "content.js"]});
+    const results = await this.api.scripting.executeScript({target: {tabId}, files: [files[provider], ...(["bandwagon", "dmit"].includes(provider) ? ["order-adapter.js"] : []), "content.js"]});
     const frame = results.find(item => item.frameId === 0 && typeof item.documentId === "string");
     if (!frame || this.active !== active) throw new Error("DOCUMENT_NOT_BOUND");
     active.document_id = frame.documentId;
@@ -174,6 +185,7 @@ export class CompanionController {
     if (!result || typeof result !== "object") { await this.pause("FAILED", "INVALID_PAGE_RESULT"); return false; }
     this.active.challenge = result.challenge || "UNKNOWN"; this.active.login = result.login || "UNKNOWN";
     if (result.code === "RATE_LIMITED") { await this.pause("FAILED", "RATE_LIMITED", "SITE_CHANGED", result); return false; }
+    if (["APPLE_BAG_BLOCKED", "APPLE_BAG_UNAVAILABLE"].includes(result.code)) { await this.pause("FAILED", result.code, "SITE_CHANGED", result); return false; }
     if (result.code === "CONFIGURATION_UNCERTAIN") { await this.pause("PAUSED_UNCERTAIN", "CONFIGURATION_UNCERTAIN", "SITE_CHANGED", result); return false; }
     if (result.code === "CONFIGURATION_INVALID") { await this.pause("FAILED", "CONFIGURATION_INVALID", "SITE_CHANGED", result); return false; }
     if (result.challenge === "REQUIRED" || result.code === "HUMAN_CHALLENGE_REQUIRED") { await this.pause("WAITING_FOR_HUMAN", "HUMAN_CHALLENGE_REQUIRED", "HUMAN_CHALLENGE_REQUIRED", result); return false; }
@@ -291,7 +303,7 @@ export class CompanionController {
     if (current()) await this.api.tabs.update(a.tab_id, {url: a.product.url});
   }
   async pump() {
-    if (this.pumping || !this.active || !this.connected || !Number.isInteger(this.active.tab_id) || TERMINAL.has(this.active.state)) return;
+    if (this.pumping || !this.active || this.active.order_session || !this.connected || !Number.isInteger(this.active.tab_id) || TERMINAL.has(this.active.state)) return;
     this.pumping = true;
     const rev = this.revision;
     try {
@@ -305,7 +317,7 @@ export class CompanionController {
       if (rev !== this.revision || !this.connected) return;
       if (this.active.state !== "RUNNING" && this.active.state !== "OPENED") {
         // A challenge page is observed passively; no configure/click runs here.
-        if (page.challenge === "NONE" && page.login !== "REQUIRED" && !["RATE_LIMITED", "CONFIGURATION_UNCERTAIN", "CONFIGURATION_INVALID"].includes(page.code) && !["UNKNOWN", "LOGIN", "HUMAN_CHALLENGE"].includes(page.stage)) {
+        if (page.challenge === "NONE" && page.login !== "REQUIRED" && !["RATE_LIMITED", "CONFIGURATION_UNCERTAIN", "CONFIGURATION_INVALID", "APPLE_BAG_BLOCKED", "APPLE_BAG_UNAVAILABLE"].includes(page.code) && !["UNKNOWN", "LOGIN", "HUMAN_CHALLENGE"].includes(page.stage)) {
           this.active.challenge = "NONE"; this.active.login = page.login || "UNKNOWN";
           if (!this.normalObserved) { this.normalObserved = true; await this.save(); await this.pageOpened(page); }
         }

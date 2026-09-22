@@ -1,6 +1,10 @@
 # Configuration outline only. Runtime reads config/config.toml via Python tomllib.
 # Use config/config.example.toml as the executable template; no YAML dependency.
 mode: DRY_RUN
+# Separate foreground order-smoke authority is never loaded from this outline.
+REAL_ORDER_SMOKE_TEST_ARMED: false
+LIVE: OFF
+ARM: OFF
 providers:
   bandwagon:
     enabled: true
@@ -8,6 +12,7 @@ providers:
     enabled: true
   vmiss:
     enabled: true
+    interval_seconds: 900
   vps:
     enabled: true
   apple:

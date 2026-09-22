@@ -8,7 +8,7 @@ async function refresh(action = "STATUS") {
     show("version", state.version); show("heartbeat", state.last_heartbeat ? new Date(state.last_heartbeat).toLocaleTimeString() : "尚无");
     show("tab", state.tab_id === null ? "尚无" : String(state.tab_id)); show("intent", state.intent_id || "尚无");
     show("state", labels[state.state] || state.state); show("login", ({VALID:"已核实", REQUIRED:"需要本人登录", UNKNOWN:"尚未核实"})[state.login] || "尚未核实"); show("challenge", ({NONE: "当前未发现", REQUIRED: "等待本人验证", UNKNOWN: "尚未核实"})[state.challenge] || "尚未核实");
-    show("notice", state.mutation_uncertain ? "已有操作发出，结果尚未核实。不会自动重复操作。" : state.error ? `连接或页面状态：${state.error}` : "订单与付款均未开放。");
+    show("notice", state.mutation_uncertain ? "已有操作发出，结果尚未核实。不会自动重复操作。" : state.error ? `连接或页面状态：${state.error}` : "常规监控不会提交订单。付款须由本人完成。");
   } catch { show("connected", "不可用"); show("notice", "请先运行本机安装向导，然后点击连接。"); }
 }
 document.getElementById("connect").addEventListener("click", () => { void refresh("CONNECT"); });

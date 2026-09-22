@@ -49,6 +49,101 @@ class EdgeBroker:
             self.connection.execute("""CREATE TABLE IF NOT EXISTS edge_messages (
                 message_id TEXT PRIMARY KEY, command_id TEXT NOT NULL, type TEXT NOT NULL,
                 received_at TEXT NOT NULL)""")
+            command_columns = {r[1] for r in self.connection.execute("PRAGMA table_info(edge_commands)")}
+            if "order_result_json" not in command_columns:
+                self.connection.execute("ALTER TABLE edge_commands ADD COLUMN order_result_json TEXT")
+
+    def enqueue_order(self, kind, intent_id, payload):
+        """Use the existing queue; submit requires an already committed nonce."""
+        from .order_protocol import ORDER_COMMANDS, permit_fresh
+        if kind not in ORDER_COMMANDS:
+            raise ProtocolError("ORDER_COMMAND_INVALID")
+        intent = self.intents._required(intent_id)
+        message = make_message(kind, intent_id=intent_id, product_id=intent["product_id"],
+                               provider=intent["provider"], payload=payload)
+        with self.store._transaction():
+            intent = self.intents._required(intent_id)
+            if not self.status()["connected"]:
+                raise ProtocolError("EDGE_DISCONNECTED")
+            active = self._state()["current_intent"]
+            if active and active != intent_id:
+                previous = self.intents.get(active)
+                if previous and previous["edge_state"] not in _FINISHED | _PAUSED:
+                    raise ProtocolError("EXECUTOR_BUSY")
+            if self.connection.execute("SELECT 1 FROM edge_commands WHERE intent_id=? AND status IN ('QUEUED','DISPATCHED')", (intent_id,)).fetchone():
+                raise ProtocolError("INTENT_COMMAND_PENDING")
+            if intent["edge_tab_id"] is not None and intent["edge_tab_id"] != payload["tab_id"]:
+                raise ProtocolError("TAB_IDENTITY_MISMATCH")
+            saved = self.store.get_event(intent["event_id"])["product"]
+            product = payload["product"]
+            if (product["name"] != saved["name"] or product["url"] != saved["product_url"]
+                    or not any(all(p.get(k) == product[k] for k in ("cents", "currency", "period")) and p.get("available") is True for p in saved["prices"])):
+                raise ProtocolError("INTENT_PRODUCT_CHANGED")
+            if kind == "ORDER_PRECHECK" and (intent["state"] not in {"CHECKOUT_READY", "ORDER_PRECHECK"} or intent["submit_started_at"]):
+                raise ProtocolError("CHECKOUT_REQUIRED")
+            if kind == "SUBMIT_ORDER":
+                permit, check = payload["permit"], intent["order_precheck"]
+                if (intent["state"] != "ORDER_SUBMITTING" or intent["submission_nonce"] != permit["nonce"]
+                        or not check or check["precheck_id"] != permit["precheck_id"] or check["tab_id"] != payload["tab_id"]
+                        or not permit_fresh(permit) or self.connection.execute("SELECT 1 FROM edge_commands WHERE intent_id=? AND type='SUBMIT_ORDER'", (intent_id,)).fetchone()):
+                    raise ProtocolError("ORDER_SUBMISSION_REJECTED")
+            if kind == "RECONCILE_ORDER" and (payload["submission_nonce"] != intent["submission_nonce"]
+                    or payload["submitted_at"] != (intent["submit_started_at"] if intent["submission_nonce"] else None)
+                    or payload["order_id"] != intent["order_id"] or payload["invoice_id"] != intent["invoice_id"]):
+                raise ProtocolError("ORDER_SUBMISSION_IDENTITY_MISMATCH")
+            self.connection.execute("UPDATE purchase_intents SET edge_state='QUEUED',edge_command_id=?,updated_at=? WHERE intent_id=?", (message["command_id"], now(), intent_id))
+            self.connection.execute("UPDATE edge_transport_state SET current_intent=?,execution_state='QUEUED' WHERE id=1", (intent_id,))
+            self.connection.execute("INSERT INTO edge_commands(command_id,type,intent_id,message_json,status,created_at) VALUES(?,?,?,?,'QUEUED',?)",
+                                    (message["command_id"], kind, intent_id, json.dumps(message), now()))
+        return message
+
+    def order_result(self, command_id):
+        row = self.connection.execute("SELECT status,order_result_json FROM edge_commands WHERE command_id=?", (command_id,)).fetchone()
+        if row is None:
+            raise ProtocolError("COMMAND_UNKNOWN")
+        return {"status": row["status"], "observation": json.loads(row["order_result_json"]) if row["order_result_json"] else None}
+
+    def _order_observation(self, message):
+        payload = message["payload"]
+        with self.store._transaction():
+            if not self.status()["connected"]:
+                raise ProtocolError("EDGE_DISCONNECTED")
+            if self.connection.execute("SELECT 1 FROM edge_messages WHERE message_id=?", (message["message_id"],)).fetchone():
+                raise ProtocolError("MESSAGE_REPLAYED")
+            command = self.connection.execute("SELECT * FROM edge_commands WHERE command_id=?", (message["command_id"],)).fetchone()
+            if command is None or command["status"] != "DISPATCHED" or command["connection_id"] != self._state()["connection_id"]:
+                raise ProtocolError("COMMAND_CORRELATION_REJECTED")
+            original = json.loads(command["message_json"])
+            if original["type"] not in {"ORDER_PRECHECK", "SUBMIT_ORDER", "RECONCILE_ORDER"}:
+                raise ProtocolError("ORDER_COMMAND_INVALID")
+            if any(original[k] != message[k] for k in ("provider", "product_id", "intent_id")) or payload["tab_id"] != original["payload"]["tab_id"]:
+                raise ProtocolError("COMMAND_IDENTITY_MISMATCH")
+            outcome = payload["outcome"]
+            if (original["type"] == "ORDER_PRECHECK" and outcome not in {"PRECHECK_READY", "UNKNOWN", "LOGIN_REQUIRED", "HUMAN_ACTION_REQUIRED"}
+                    or original["type"] != "ORDER_PRECHECK" and outcome == "PRECHECK_READY"):
+                raise ProtocolError("ORDER_RESULT_STAGE_INVALID")
+            if "observed_at" in payload and not 0 <= (datetime.now(timezone.utc)-timestamp(payload["observed_at"])).total_seconds() <= 120:
+                raise ProtocolError("ORDER_EVIDENCE_STALE")
+            if outcome not in {"UNKNOWN", "LOGIN_REQUIRED", "HUMAN_ACTION_REQUIRED"}:
+                if any(payload[k] != original["payload"]["product"][v] for k, v in (("amount_cents", "cents"), ("currency", "currency"), ("billing", "period"))):
+                    raise ProtocolError("ORDER_QUOTE_MISMATCH")
+            intent = self.intents._required(message["intent_id"])
+            if "submission_nonce" in payload and payload["submission_nonce"] != intent["submission_nonce"]:
+                raise ProtocolError("ORDER_SUBMISSION_IDENTITY_MISMATCH")
+            if outcome in {"ORDER_FOUND", "INVOICE_FOUND", "PAYMENT_READY"}:
+                for field in ("order_id", "invoice_id"):
+                    if intent[field] is not None and payload.get(field, intent[field]) != intent[field]:
+                        raise ProtocolError("ORDER_RESULT_IDENTITY_MISMATCH")
+                if intent["order_id"] is None:
+                    if (not intent["submit_started_at"] or "created_at" not in payload
+                            or (timestamp(payload["created_at"])-timestamp(intent["submit_started_at"])).total_seconds() < -5
+                            or timestamp(payload["created_at"]) > timestamp(payload["observed_at"])):
+                        raise ProtocolError("ORDER_TIME_SCOPE_UNVERIFIED")
+            self.connection.execute("INSERT INTO edge_messages(message_id,command_id,type,received_at) VALUES(?,?,?,?)", (message["message_id"], message["command_id"], message["type"], now()))
+            self.connection.execute("UPDATE edge_commands SET status='DONE',order_result_json=? WHERE command_id=?", (json.dumps(payload), message["command_id"]))
+            self.connection.execute("UPDATE purchase_intents SET edge_tab_id=?,edge_state='CHECKOUT_READY',updated_at=? WHERE intent_id=?", (payload["tab_id"], now(), message["intent_id"]))
+            self.connection.execute("UPDATE edge_transport_state SET current_intent=NULL,execution_state='READY' WHERE id=1")
+        return {"accepted": True, "type": message["type"], "human_notification": None}
 
     def _state(self):
         return dict(self.connection.execute("SELECT * FROM edge_transport_state WHERE id=1").fetchone())
@@ -195,6 +290,26 @@ class EdgeBroker:
             if row is None:
                 return None
             message = json.loads(row["message_json"])
+            if message["type"] == "SUBMIT_ORDER":
+                from .order_protocol import permit_fresh
+                from autograb.core.live import signal_present
+                from pathlib import Path
+                from autograb.core.lock import lock_is_held, submission_lease_path
+                data = Path(self.store.path).parent
+                intent = self.intents._required(message['intent_id'])
+                permit = message['payload']['permit']
+                check = intent['order_precheck'] or {}
+                if (intent['state'] != 'ORDER_SUBMITTING' or intent['submission_nonce'] != permit['nonce']
+                        or intent['submit_started_at'] != permit['issued_at']
+                        or intent['order_id'] is not None or intent['invoice_id'] is not None
+                        or check.get('precheck_id') != permit['precheck_id']
+                        or check.get('tab_id') != message['payload']['tab_id']
+                        or intent['edge_command_id'] != row['command_id']
+                        or not lock_is_held(submission_lease_path(data, permit['nonce']))
+                        or not permit_fresh(permit) or signal_present(data, "disarm")
+                        or signal_present(data, "stop_monitoring")):
+                    self._halt("DISARMED")
+                    return None
             message["timestamp"] = now()
             validate(message, direction="command")
             self.connection.execute("""UPDATE edge_commands SET status='DISPATCHED',dispatched_at=?,
@@ -208,6 +323,7 @@ class EdgeBroker:
     def _halt(self, reason):
         state = self._state()
         self.connection.execute("UPDATE edge_commands SET status='HALTED' WHERE status IN ('QUEUED','DISPATCHED') AND intent_id IS NOT NULL")
+        self.connection.execute("UPDATE purchase_intents SET state='ORDER_UNCERTAIN',updated_at=? WHERE state='ORDER_SUBMITTING' AND submission_nonce IS NOT NULL", (now(),))
         if state["current_intent"]:
             intent = self.intents.get(state["current_intent"])
             if intent and intent["edge_state"] not in _FINISHED:
@@ -223,6 +339,8 @@ class EdgeBroker:
     def handle_event(self, message):
         validate(message, direction="event")
         kind, payload = message["type"], message["payload"]
+        if kind == "ORDER_OBSERVATION":
+            return self._order_observation(message)
         if kind in _ORDER_EVENTS:
             raise ProtocolError("LIVE_NOT_ENABLED")
         result = {"accepted": True, "type": kind, "human_notification": None}
@@ -335,6 +453,12 @@ class EdgeBroker:
                     if cancelled and "cart_id" in payload:
                         uncertain = True  # Preserve unexpected cart evidence across later cancels.
                     self.connection.execute("UPDATE edge_commands SET status=? WHERE command_id=?", ("DONE" if cancelled else "PAUSED", message["command_id"]))
+                    if kind in {"FAILED", "SITE_CHANGED"}:
+                        from autograb.core.rate_budget import ProviderRateBudget
+                        if intent["provider"] == "vmiss" and payload.get("code") == "RATE_LIMITED":
+                            ProviderRateBudget.record_browser_block(self.store, "vmiss", "global", "catalog", "RATE_LIMITED")
+                        elif intent["provider"] == "apple" and payload.get("code") == "APPLE_BAG_BLOCKED":
+                            ProviderRateBudget.record_browser_block(self.store, "apple", intent["product_id"].split(":", 1)[0], "fulfillment", "APPLE_BAG_BLOCKED")
                 else:
                     raise ProtocolError("EVENT_SEQUENCE_INVALID")
                 self.connection.execute("""UPDATE purchase_intents SET state=?,cart_identifier=?,edge_state=?,

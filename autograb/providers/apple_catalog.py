@@ -16,6 +16,7 @@ from urllib.request import Request, build_opener
 
 from autograb.core.errors import AutoGrabError
 from autograb.core.models import Product
+from autograb.core.rate_budget import BudgetWait, PublicHTTPError
 from .apple import REGIONS, _NoRedirect, _SKU
 
 
@@ -70,33 +71,70 @@ def _official_url(url, region):
         and "/../" not in parts.path and "/./" not in parts.path)
 
 
-def public_html(url):
+def _claim_page(budget, region, url):
+    endpoint = "storelist" if urlsplit(url).path.endswith("/retail/storelist/") else "catalog"
+    try:
+        return budget.claim("apple", region, endpoint, interval_seconds=2)
+    except BudgetWait as error:
+        status = error.budget_status
+        # Only ordinary two-second pacing may wait here. A server block or
+        # another worker's request returns immediately, without a retry loop.
+        if status["blocked_until"] or status["in_flight"] or status["wait_seconds"] > 2:
+            raise
+        time.sleep(status["wait_seconds"] + .01)
+        return budget.claim("apple", region, endpoint, interval_seconds=2)
+
+
+def public_html(url, *, budget=None, region=None, on_ticket=None):
     """Bounded GET only, without cookies, auth or redirect outside store pages."""
-    region = next((key for key in REGIONS if _official_url(url, key)), None)
-    if region is None:
+    region = region or next((key for key in REGIONS if _official_url(url, key)), None)
+    if region is None or not _official_url(url, region):
         raise AutoGrabError("APPLE_CATALOG_URL_REJECTED")
     prefix = urlsplit(REGIONS[region]).path
     opener = build_opener(_NoRedirect)
     for _ in range(3):
+        ticket = _claim_page(budget, region, url) if budget else None
+        if on_ticket:
+            on_ticket(ticket)
         request = Request(url, headers={"User-Agent":"AutoGrab/0.4 (public catalog monitor)", "Accept":"text/html"})
         try:
             with opener.open(request, timeout=20) as response:
                 raw = response.read(4_000_001)
                 if len(raw) > 4_000_000:
                     raise AutoGrabError("APPLE_CATALOG_TOO_LARGE")
-                return raw.decode("utf-8")
+                html = raw.decode("utf-8")
+                if budget and not budget.success(ticket):
+                    raise AutoGrabError("RATE_PROBE_EXPIRED")
+                return html
         except HTTPError as error:
             if error.code in (301, 302, 307, 308):
                 destination = urljoin(url, error.headers.get("Location", ""))
                 parsed = urlsplit(destination)
                 if (not _official_url(destination, region)
                         or not re.fullmatch(re.escape(prefix)+r"/(?:store/?|shop/buy-[a-z0-9-]+(?:/[a-zA-Z0-9-]+)*/?|retail/storelist/?)", parsed.path)):
+                    if budget:
+                        budget.failure(ticket, "APPLE_CATALOG_REDIRECT_REJECTED", retry_after=error.headers.get("Retry-After"))
                     raise AutoGrabError("APPLE_CATALOG_REDIRECT_REJECTED") from None
+                if budget:
+                    if error.headers.get("Retry-After"):
+                        budget.failure(ticket, "APPLE_CATALOG_REDIRECT_WAIT", retry_after=error.headers.get("Retry-After"))
+                        raise AutoGrabError("RATE_LIMIT_WAIT") from None
+                    if not budget.success(ticket):
+                        raise AutoGrabError("RATE_PROBE_EXPIRED")
                 url = destination
                 continue
-            raise AutoGrabError("HUMAN_CHALLENGE_REQUIRED" if error.code in (401, 403, 541) else "RATE_LIMITED" if error.code == 429 else "APPLE_CATALOG_HTTP_ERROR") from None
+            code = "HTTP_BLOCKED" if error.code in (401, 403, 541) else "RATE_LIMITED" if error.code == 429 else "APPLE_CATALOG_HTTP_ERROR"
+            if budget:
+                budget.failure(ticket, code, retry_after=error.headers.get("Retry-After"), limited=error.code in (401, 403, 429, 541))
+            raise PublicHTTPError(code, error.headers.get("Retry-After")) from None
         except (URLError, OSError, UnicodeError):
+            if budget:
+                budget.failure(ticket, "APPLE_CATALOG_NETWORK_ERROR")
             raise AutoGrabError("APPLE_CATALOG_NETWORK_ERROR") from None
+        except AutoGrabError as error:
+            if budget:
+                budget.failure(ticket, error.code)
+            raise
     raise AutoGrabError("APPLE_CATALOG_REDIRECT_REJECTED")
 
 
@@ -185,17 +223,42 @@ def parse_purchase_page(html, url, region):
 
 
 class AppleCatalog:
-    def __init__(self, region, *, transport=None, progress=None):
+    def __init__(self, region, *, transport=None, progress=None, budget=None):
         if region not in REGIONS:
             raise AutoGrabError("APPLE_REGION_NOT_CONFIGURED")
         self.region, self.base = region, REGIONS[region]
         self.transport, self.progress = transport or public_html, progress or (lambda _message: None)
+        self.budget, self._last_ticket = budget, None
         self.pages = {}
+
+    def _ticket(self, ticket):
+        self._last_ticket = ticket
+
+    def _invalid(self, code):
+        if self.budget and self._last_ticket:
+            self.budget.failure(self._last_ticket, code)
+        raise AutoGrabError(code)
 
     def page(self, url):
         if url not in self.pages:
             self.progress(url)
-            self.pages[url] = self.transport(url)
+            if self.budget and self.transport is public_html:
+                self.pages[url] = public_html(url, budget=self.budget, region=self.region, on_ticket=self._ticket)
+            elif self.budget:
+                ticket = _claim_page(self.budget, self.region, url)
+                self._ticket(ticket)
+                try:
+                    self.pages[url] = self.transport(url)
+                except Exception as error:
+                    code = error.code if isinstance(error, AutoGrabError) else "APPLE_CATALOG_NETWORK_ERROR"
+                    self.budget.failure(ticket, code, retry_after=getattr(error, "retry_after", None),
+                        limited=code in {"RATE_LIMITED", "HTTP_BLOCKED", "HUMAN_CHALLENGE_REQUIRED"})
+                    raise AutoGrabError(code) from None
+                if not self.budget.success(ticket):
+                    self.pages.pop(url, None)
+                    raise AutoGrabError("RATE_PROBE_EXPIRED")
+            else:
+                self.pages[url] = self.transport(url)
         return self.pages[url]
 
     def categories(self):
@@ -207,7 +270,7 @@ class AppleCatalog:
             if _official_url(url, self.region) and match:
                 result[match[1]] = url.rstrip("/")
         if not result:
-            raise AutoGrabError("APPLE_CATALOG_CATEGORIES_UNVERIFIED")
+            self._invalid("APPLE_CATALOG_CATEGORIES_UNVERIFIED")
         return result
 
     def models(self, category):
@@ -223,11 +286,15 @@ class AppleCatalog:
             if _official_url(target, self.region) and match:
                 result[match[1]] = target.rstrip("/")
         if not result:
-            raise AutoGrabError("APPLE_CATALOG_MODELS_UNVERIFIED")
+            self._invalid("APPLE_CATALOG_MODELS_UNVERIFIED")
         return result
 
     def model_products(self, url):
-        return parse_purchase_page(self.page(url), url, self.region)
+        html = self.page(url)
+        try:
+            return parse_purchase_page(html, url, self.region)
+        except AutoGrabError as error:
+            self._invalid(error.code)
 
     def refresh(self, categories):
         self.pages = {}
@@ -235,16 +302,16 @@ class AppleCatalog:
         for category in categories:
             models = self.models(category)
             if len(models) > 32:
-                raise AutoGrabError("APPLE_CATALOG_LIMIT_REACHED")
+                self._invalid("APPLE_CATALOG_LIMIT_REACHED")
             for url in models.values():
                 for product in self.model_products(url):
                     if product.product_id in records and records[product.product_id] != product:
-                        raise AutoGrabError("APPLE_CATALOG_IDENTITY_CONFLICT")
+                        self._invalid("APPLE_CATALOG_IDENTITY_CONFLICT")
                     records[product.product_id] = product
-                if self.transport is public_html:
+                if self.transport is public_html and not self.budget:
                     time.sleep(0.5)
         if not records:
-            raise AutoGrabError("APPLE_CATALOG_EMPTY")
+            self._invalid("APPLE_CATALOG_EMPTY")
         return list(records.values())
 
     def stores(self):
@@ -266,7 +333,7 @@ class AppleCatalog:
                 try: walk(json.loads(script["text"]))
                 except ValueError: pass
         if not ids or set(found) != set(ids):
-            raise AutoGrabError("APPLE_STORES_UNVERIFIED")
+            self._invalid("APPLE_STORES_UNVERIFIED")
         return sorted(found.values(),key=lambda item:(item["city"],item["name"]))
 
 

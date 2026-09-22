@@ -51,3 +51,35 @@ code. It verifies that the observed submission creates an order, so AutoGrab
 keeps that mutation disabled. VMISS's older monitor references cannot certify
 a currently rate-limited live store. The minimal route remains fixed adapters
 with existing Core/SMTP/SQLite/Edge; no added production dependencies or services.
+
+## v0.5.0-alpha order and request-budget research
+
+The shared order lifecycle, SQLite nonce/notification claims, fixed Edge order
+commands and ProviderRateBudget are small independent extensions of AutoGrab's
+existing Core. No additional order engine, monitor runtime, rate-limit package or
+production dependency was imported. Experimental DOM contracts are explicitly
+labelled fixtures, not copied merchant implementations or live acceptance evidence.
+
+Two official WHMCS references establish why a checkout submit cannot be assumed
+to create only an unpaid order:
+
+- [Official checkout template, reviewed commit a77d9d8](https://github.com/WHMCS/orderforms-standard_cart/blob/a77d9d8f2b8d0a010aebf8f9d36c85cf68f3d470/checkout.tpl#L575)
+  (2026-07-08): account-credit and stored-card controls coexist with the final
+  checkout submission. No LICENSE was found at the reviewed revision; the
+  template is a behavior reference only and was not copied or vendored.
+- [WHMCS credit balances: checkout and new orders](https://docs.whmcs.com/8-0-9/payments/credit-balances/#checkout-and-new-orders)
+  explains application of account credit to new invoices. Applying credit is a
+  financial action, not a harmless unpaid-order lookup. AutoGrab does not do it.
+
+Current BWH/DMIT themes require their own independently verified no-charge
+contract; the upstream template is not a substitute. The implemented experimental
+contract has only offline fixture evidence, so current live submission is blocked.
+No merchant account data, card state, full frontend bundle or real order response
+was copied into these fixtures.
+
+Apple work continues to use public catalogue/pickup behavior and ordinary Edge
+page observations only. GPL watcher code remains uncopied. HTTP 541 handling reads
+already-present response metadata and stops; it includes no Shield workaround,
+fingerprint spoofing or private purchase API reconstruction. VMISS 1015 handling
+uses persisted cooldown and a single later probe, without adopting challenge or
+proxy approaches from third-party monitors.

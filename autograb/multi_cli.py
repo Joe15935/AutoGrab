@@ -102,11 +102,11 @@ async def run_multi(args, config):
     if not names:
         raise ValueError("No providers enabled")
     logs = {name: EventLog(config.root / "logs/events.jsonl", provider=name) for name in names}
-    providers = {name: create_provider(name, config, logs[name]) for name in names}
     notifier = EmailNotifier(load_setup(config.root, base=config.smtp))
     blocked = set()
     paused_report = {}
     with ProcessLock(config.root / "data/autograb.lock"), Store(config.root / "data/autograb.sqlite3") as store:
+        providers = {name: create_provider(name, config, logs[name], store=store) for name in names}
         store.recover_interrupted()
         run_id = store.start_run("multi_" + args.command)
         try:
@@ -120,13 +120,21 @@ async def run_multi(args, config):
                     if isinstance(result, Exception):
                         code = result.code if isinstance(result, AutoGrabError) else "DATA_SOURCE_UNAVAILABLE"
                         report[name] = {"status": "USER_ACTION_REQUIRED" if code in {"HUMAN_CHALLENGE_REQUIRED", "LOGIN_REQUIRED", "APPLE_TARGETS_NOT_CONFIGURED"} else "BLOCKED", "reason": code}
+                        rate_status = getattr(providers[name], "rate_status", None)
+                        if rate_status:
+                            report[name]["rate_budget"] = rate_status
+                            if code in {"RATE_LIMIT_WAIT", "RATE_LIMITED", "CATALOG_INCOMPLETE", "HTTP_BLOCKED"}:
+                                report[name]["status"] = "WAITING"
                         logs[name].write("PROVIDER_PAUSED", code=code)
-                        if code in {"HUMAN_CHALLENGE_REQUIRED", "LOGIN_REQUIRED", "APPLE_TARGETS_NOT_CONFIGURED", "RATE_LIMITED", "HTTP_403"}:
+                        if (code in {"HUMAN_CHALLENGE_REQUIRED", "LOGIN_REQUIRED", "APPLE_TARGETS_NOT_CONFIGURED", "HTTP_403"}
+                                or (code == "RATE_LIMITED" and not rate_status)):
                             blocked.add(name)
                             paused_report[name] = report[name]
                         continue
                     if args.command == "probe":
                         report[name] = {"status": "DISCOVERED", "count": len(result)}
+                        if getattr(providers[name], "rate_status", None):
+                            report[name]["rate_budget"] = providers[name].rate_status
                         continue
                     if name == "apple":
                         from autograb.providers.apple_catalog import merge_observations
@@ -145,9 +153,11 @@ async def run_multi(args, config):
                     report[name] = {"status": "BASELINE" if snapshot["baseline_initialized"] else "MONITORED",
                         "known_count": snapshot["known_count"], "observed_count": len(result),
                         "opportunities": opportunities, "orders_created": 0, "payments": 0}
+                    if getattr(providers[name], "rate_status", None):
+                        report[name]["rate_budget"] = providers[name].rate_status
                 print(json.dumps({"providers": report, "live": "OFF", "arm": "OFF"}, ensure_ascii=False), flush=True)
                 if args.command != "monitor" or args.once or len(blocked) == len(names):
-                    status = "PARTIAL" if any(x["status"] in {"BLOCKED", "USER_ACTION_REQUIRED"} for x in report.values()) else "COMPLETE"
+                    status = "PARTIAL" if any(x["status"] in {"BLOCKED", "USER_ACTION_REQUIRED", "WAITING"} for x in report.values()) else "COMPLETE"
                     store.finish_run(run_id, status, report)
                     return 2 if status == "PARTIAL" else 0
                 from autograb.phase2_cli import monitoring_wait

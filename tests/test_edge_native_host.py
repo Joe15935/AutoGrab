@@ -169,7 +169,9 @@ class EdgeNativeHostTests(unittest.TestCase):
         self.assertEqual(result.status, "SMTP_ACCEPTED")
         body = send.call_args.args[0].get_content()
         self.assertIn("Microsoft Edge", body)
-        self.assertIn("DRY RUN", body)
+        self.assertIn("订单结果以已保存的状态和商家核实结果为准", body)
+        self.assertNotIn("本次仅为 DRY RUN", body)
+        self.assertIn("自动付款保持关闭", body)
         self.assertNotIn("dedicated browser", body)
 
 

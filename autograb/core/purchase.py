@@ -13,7 +13,7 @@ import re
 from typing import Any
 
 from .errors import AutoGrabError
-from .live import LiveGuard, Preflight
+from .live import LiveGuard, Preflight, RealOrderSmokeGuard
 from .models import Product
 from .purchase_state import PurchaseState, transition
 from .purchase_timing import PurchaseTiming
@@ -118,7 +118,9 @@ class PurchaseRunner:
         if code not in HUMAN_ERRORS:
             return
         try:
-            result = await self.notifier.send_session_required(event["id"], code)
+            provider = event.get('provider', 'bandwagon')
+            result = await self.notifier.send_session_required(event["id"], code,
+                **({'provider': provider} if provider != 'bandwagon' else {}))
             if not isinstance(result, NotificationResult):
                 raise TypeError("Invalid notifier result")
             self.store.record_notification(event["id"], result.status, code)
@@ -128,6 +130,8 @@ class PurchaseRunner:
     async def _notify_payment(self, event, product, intent, timing):
         # PAYMENT_READY was committed before even entering the notifier. A
         # transport failure cannot remove the order or cause another dispatch.
+        if not self.intents.claim_payment_notification(intent["intent_id"]):
+            return self.intents.mark_waiting(intent["intent_id"]), {"status": "ALREADY_CLAIMED", "error_code": None}
         try:
             result = await self.notifier.send_payment_ready(product, event, intent, timing.as_dict())
             if not isinstance(result, NotificationResult):
@@ -144,6 +148,76 @@ class PurchaseRunner:
         self.store.record_notification(event["id"], status, code or "")
         waiting = self.intents.mark_waiting(intent["intent_id"])
         return waiting, notification
+
+    async def precheck_checkout(self, intent_id):
+        """Read the existing L5 page, without repeating product/cart actions."""
+        intent = self.intents._required(intent_id)
+        if intent["provider"] not in {"bandwagon", "dmit"} or intent["submit_started_at"] is not None:
+            raise AutoGrabError("ORDER_RECONCILIATION_REQUIRED")
+        event = self.store.get_event(intent["event_id"])
+        product = Product.from_dict(event["product"])
+        observation = await self.provider.precheck_order(intent, product)
+        if not isinstance(observation, dict) or observation.get("outcome") != "PRECHECK_READY":
+            return observation
+        self.intents.set_order_precheck(intent_id, observation)
+        return observation
+
+    async def submit_checkout(self, intent_id, smoke_guard):
+        """Shared BWH/DMIT L6/L7 path, consuming one separately armed permit.
+
+        A normal monitoring guard, simulated browser, environment flag or prior
+        process cannot authorize this entry point. Existing L5 evidence is used;
+        only its current final boundary is read again immediately before submit.
+        """
+        async with self._worker:
+            intent = self.intents._required(intent_id)
+            event = self.store.get_event(intent["event_id"])
+            product = Product.from_dict(event["product"])
+            timing = PurchaseTiming()
+            if intent["submit_started_at"] is not None:
+                return self._result(event, "ORDER_UNCERTAIN" if not intent["order_id"] else "ORDER_ALREADY_EXISTS", timing, intent=intent, error_code="NO_AUTOMATIC_RESUBMISSION")
+            self._check_origin(event)
+            if not isinstance(smoke_guard, RealOrderSmokeGuard):
+                raise AutoGrabError("REAL_ORDER_SMOKE_TEST_NOT_ARMED")
+            if smoke_guard.provider != intent["provider"]:
+                raise AutoGrabError("SMOKE_PROVIDER_MISMATCH")
+            if smoke_guard.status().get("REAL_ORDER_SMOKE_TEST_ARMED") is not True:
+                raise AutoGrabError("REAL_ORDER_SMOKE_TEST_NOT_ARMED")
+            check = await self.precheck_checkout(intent_id)
+            if not isinstance(check, dict) or check.get("outcome") != "PRECHECK_READY":
+                return self._result(event, "ORDER_PRECHECK", timing, intent=self.intents.get(intent_id), error_code="ORDER_PRECHECK_FAILED")
+            preflight = await self.preflight()
+            permit = smoke_guard.issue_permit(intent_id, check["precheck_id"], preflight)
+            if not self.intents.begin_order_submission(intent_id, permit["nonce"], check["precheck_id"], submitted_at=permit["issued_at"]):
+                return self._result(event, "ORDER_ALREADY_EXISTS", timing, intent=self.intents.get(intent_id), error_code="NO_AUTOMATIC_RESUBMISSION")
+            timing.mark("T5")
+            self._record(event, "ORDER_SUBMITTING", timing, ["ORDER_PRECHECK", "ORDER_SUBMITTING"], intent_id=intent_id)
+            try:
+                # A persisted marker is conservative: even a kill/expiry right
+                # here becomes uncertain and never grants a replacement submit.
+                smoke_guard.assert_permit(intent_id, permit, await self.preflight())
+                self._check_origin(event)
+                intent = self.intents.get(intent_id)
+                receipt = await self.provider.submit_order(intent, product, permit)
+                if not isinstance(receipt, dict) or receipt.get("status") not in {"FOUND", "ORDER_FOUND"}:
+                    self.intents.mark_uncertain(intent_id)
+                    return await self._reconcile_one(event, product, self.intents.get(intent_id), timing, [], recovery=False)
+                result = await self._finish_receipt(event, product, intent, receipt, timing, [], state=PurchaseState.ORDER_SUBMITTING, recovery=False)
+                self.intents.searching(intent_id)
+                return result
+            except asyncio.CancelledError:
+                current = self.intents.get(intent_id)
+                if not current["order_id"]:
+                    self.intents.mark_uncertain(intent_id)
+                raise
+            except Exception as error:
+                current = self.intents.get(intent_id)
+                if not current["order_id"]:
+                    current = self.intents.mark_uncertain(intent_id)
+                self._record(event, current["state"], timing, [], intent_id=intent_id, error_code=_error_code(error))
+                return self._result(event, current["state"], timing, intent=current, error_code=_error_code(error))
+            finally:
+                smoke_guard.disarm()
 
     async def process(self, supplied_event: dict[str, Any]) -> dict[str, Any]:
         async with self._worker:
@@ -286,11 +360,19 @@ class PurchaseRunner:
             timing.mark("T6")
         advance(PurchaseState.ORDER_CREATED)
         if intent["invoice_id"] is None:
-            advance(PurchaseState.INVOICE_NOT_FOUND)
+            if intent.get('submission_nonce'):
+                intent = self.intents.searching(intent['intent_id'])
+                advance(PurchaseState.INVOICE_SEARCHING)
+            else:
+                advance(PurchaseState.INVOICE_NOT_FOUND)
             return self._result(event, state, timing, intent=intent, error_code="INVOICE_NOT_FOUND", recovery=recovery)
         advance(PurchaseState.INVOICE_CREATED)
         if intent["payment_url"] is None:
-            advance(PurchaseState.PAYMENT_URL_NOT_FOUND)
+            if intent.get('submission_nonce'):
+                intent = self.intents.searching(intent['intent_id'])
+                advance(PurchaseState.PAYMENT_LINK_SEARCHING)
+            else:
+                advance(PurchaseState.PAYMENT_URL_NOT_FOUND)
             return self._result(event, state, timing, intent=intent, error_code="PAYMENT_URL_NOT_FOUND", recovery=recovery)
         timing.mark("T7")
         advance(PurchaseState.PAYMENT_URL_READY)
@@ -309,12 +391,16 @@ class PurchaseRunner:
                              human_notice_sent=False):
         try:
             self._check_origin(event)
+            if intent.get("submission_nonce"):
+                intent = self.intents.searching(intent["intent_id"])
             receipt = await self.provider.reconcile_intent(intent, product)
-            if not isinstance(receipt, dict) or receipt.get("status") not in {"FOUND", "ABSENT", "UNKNOWN"}:
+            if isinstance(receipt, dict) and receipt.get("status") in {"LOGIN_REQUIRED", "HUMAN_ACTION_REQUIRED"}:
+                raise AutoGrabError("LOGIN_REQUIRED" if receipt["status"] == "LOGIN_REQUIRED" else "CAPTCHA_REQUIRED")
+            if not isinstance(receipt, dict) or receipt.get("status") not in {"FOUND", "ORDER_FOUND", "ABSENT", "NO_ORDER_FOUND", "UNKNOWN"}:
                 raise AutoGrabError("RECONCILIATION_UNVERIFIED")
-            status = receipt["status"]
+            status = {"ORDER_FOUND": "FOUND", "NO_ORDER_FOUND": "ABSENT"}.get(receipt["status"], receipt["status"])
             fields = {name: receipt.get(name) for name in ("order_id", "invoice_id", "payment_url", "verification")}
-            reconciled = self.intents.reconcile(intent["intent_id"], status, **fields)
+            reconciled = self.intents.reconcile(intent["intent_id"], status, **fields, absence_evidence=receipt.get("absence_evidence"))
             if status == "FOUND":
                 return await self._finish_receipt(event, product, reconciled, receipt, timing, timeline,
                                                   state=PurchaseState.RECONCILIATION_REQUIRED, recovery=recovery)
@@ -349,6 +435,8 @@ class PurchaseRunner:
                             if item["state"] == "PAYMENT_READY"})
             results = []
             for intent in pending.values():
+                if intent['provider'] != getattr(self.provider, 'provider_name', 'bandwagon'):
+                    continue
                 event = self.store.get_event(intent["event_id"])
                 if event is None:
                     continue  # Foreign key normally makes this impossible.

@@ -17,6 +17,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from autograb.core.errors import AutoGrabError
 from autograb.core.models import Product
+from autograb.core.rate_budget import BudgetWait
 
 
 REGIONS = {
@@ -120,13 +121,14 @@ class AppleInventoryMonitor:
     framework is added: the existing Core owns those functions.
     """
 
-    def __init__(self, settings=None, *, transport=None, clock=None):
+    def __init__(self, settings=None, *, transport=None, clock=None, budget=None):
         self.settings = settings if isinstance(settings, dict) else {}
         self.region = self.settings.get("region")
         self.status = "APPLE_TARGETS_NOT_CONFIGURED"
         self.inventory = []
         self.targets = []
         self._transport = transport or _http_get
+        self.budget = budget
         self._clock = clock or time.monotonic
         self._next_request = 0.0
         self._cursor = 0
@@ -188,32 +190,45 @@ class AppleInventoryMonitor:
                 self.status = "HTTP_BLOCKED"
             elif not groups:
                 self.status = "DELIVERY_UNVERIFIED"
-            elif now < self._next_request:
+            elif not self.budget and now < self._next_request:
                 self.status = "RATE_LIMIT_WAIT"
             else:
-                store, skus = groups[self._cursor % len(groups)]
-                self._cursor += 1
-                params = {"pl": "true", "mts.0": "regular", "store": store}
-                params.update({f"parts.{i}": sku for i, sku in enumerate(skus)})
-                url = REGIONS[self.region] + "/shop/retail/pickup-message?" + urlencode(params)
-                self._next_request = now + self.interval
+                ticket, admitted = None, True
                 try:
-                    status, payload, retry = await asyncio.to_thread(self._transport, url)
-                except Exception:
-                    status, payload, retry = None, None, None
-                self.status = "OBSERVED" if status == 200 else "RATE_LIMITED" if status == 429 else "HTTP_BLOCKED" if status in (401, 403, 541) else "NETWORK_ERROR"
-                if status in (401, 403, 541):
-                    self._blocked = True  # Explicit operator restart required; no automatic bypass/retry.
-                if status == 429:
-                    wait = max(300, int(retry)) if isinstance(retry, str) and retry.isdigit() and len(retry) < 8 else 300
-                    self._next_request = self._clock() + wait
-                for sku in skus:
-                    key = sku, store
-                    observed = parse_pickup(payload, sku, store) if status == 200 else PickupObservation(sku, store, status=self.status)
-                    self._observations[key] = observed
-                    fresh.add(key)
-                if status == 200 and all(self._observations[key].availability == "UNKNOWN" for key in fresh):
-                    self.status = "DATA_UNVERIFIED"
+                    if self.budget:
+                        ticket = self.budget.claim("apple", self.region, "pickup", interval_seconds=self.interval)
+                except BudgetWait:
+                    self.status, admitted = "RATE_LIMIT_WAIT", False
+                if admitted:
+                    store, skus = groups[self._cursor % len(groups)]
+                    self._cursor += 1
+                    params = {"pl": "true", "mts.0": "regular", "store": store}
+                    params.update({f"parts.{i}": sku for i, sku in enumerate(skus)})
+                    url = REGIONS[self.region] + "/shop/retail/pickup-message?" + urlencode(params)
+                    self._next_request = now + self.interval
+                    try:
+                        status, payload, retry = await asyncio.to_thread(self._transport, url)
+                    except Exception:
+                        status, payload, retry = None, None, None
+                    self.status = "OBSERVED" if status == 200 else "RATE_LIMITED" if status == 429 else "HTTP_BLOCKED" if status in (401, 403, 541) else "NETWORK_ERROR"
+                    if not self.budget and status in (401, 403, 541):
+                        self._blocked = True
+                    if not self.budget and status == 429:
+                        wait = max(300, int(retry)) if isinstance(retry, str) and retry.isdigit() and len(retry) < 8 else 300
+                        self._next_request = self._clock() + wait
+                    for sku in skus:
+                        key = sku, store
+                        observed = parse_pickup(payload, sku, store) if status == 200 else PickupObservation(sku, store, status=self.status)
+                        self._observations[key] = observed
+                        fresh.add(key)
+                    if status == 200 and all(self._observations[key].availability == "UNKNOWN" for key in fresh):
+                        self.status = "DATA_UNVERIFIED"
+                    if ticket:
+                        accepted = (self.budget.success(ticket) if self.status == "OBSERVED" else
+                            self.budget.failure(ticket, self.status, retry_after=retry, limited=status in (401, 403, 429, 541)))
+                        if not accepted:
+                            self.status = "RATE_PROBE_EXPIRED"
+                            fresh.clear()
             result = []
             for target in self.targets:
                 sku = target["sku"]
@@ -234,9 +249,10 @@ class AppleInventoryMonitor:
 class AppleProvider:
     provider_name = "apple"
 
-    def __init__(self, settings=None, *, log=None, transport=None, clock=None):
+    def __init__(self, settings=None, *, log=None, transport=None, clock=None, budget=None):
         self.settings = dict(settings or {})
-        self.monitor = AppleInventoryMonitor(settings, transport=transport, clock=clock)
+        self.budget = budget
+        self.monitor = AppleInventoryMonitor(settings, transport=transport, clock=clock, budget=budget)
         self.log = log
         self.details = {}
         self.catalog = None
@@ -253,7 +269,7 @@ class AppleProvider:
                     or any(not isinstance(c, str) or not re.fullmatch(r"[a-z0-9-]{1,40}", c) for c in categories)
                     or type(interval) not in (int, float) or not 3600 <= interval <= 86400):
                 raise AutoGrabError("APPLE_CATALOG_SCOPE_NOT_CONFIGURED")
-            self.catalog = AppleCatalog(self.settings.get("region"))
+            self.catalog = AppleCatalog(self.settings.get("region"), budget=budget)
             self.catalog_status = "PENDING"
 
     @property
@@ -263,6 +279,18 @@ class AppleProvider:
     @property
     def inventory(self):
         return self.monitor.inventory
+
+    @property
+    def rate_status(self):
+        region = self.monitor.region
+        if not self.budget or region not in REGIONS:
+            return None
+        pickup = self.budget.status("apple", region, "pickup")
+        if self.catalog:
+            catalog = self.budget.status("apple", region, "catalog")
+            if catalog["blocked_until"] > pickup["blocked_until"]:
+                return catalog
+        return pickup
 
     async def discover_products(self):
         inventory = await self.monitor.poll()
@@ -275,7 +303,10 @@ class AppleProvider:
                 self.catalog_status = "VERIFIED"
             except AutoGrabError as error:
                 self.catalog_status = error.code
-                self.catalog_blocked = error.code in {"HUMAN_CHALLENGE_REQUIRED", "RATE_LIMITED"}
+                self.catalog_blocked = not self.budget and error.code in {"HUMAN_CHALLENGE_REQUIRED", "RATE_LIMITED"}
+                if self.budget:
+                    wait = self.budget.status("apple", self.monitor.region, "catalog")["wait_seconds"]
+                    self.catalog_next = self.catalog_clock() + max(1, wait)
                 if self.log:
                     self.log.write("APPLE_CATALOG_PAUSED", code=error.code)
                 if not inventory:

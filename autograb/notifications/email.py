@@ -204,20 +204,21 @@ def _stage(timing: Mapping[str, Any], name: str, mark: str) -> str:
     return "NOT REACHED"
 
 
-def safe_invoice_url(value: Any, invoice_id: Any) -> str:
+def safe_invoice_url(value: Any, invoice_id: Any, provider: str = "bandwagon") -> str:
     """Allow the exact official invoice reference, without bearer/session data.
 
     This validates a link's shape only. The caller must separately verify the
     actual page, order, product, amount and unpaid status before notifying.
     """
     identifier = str(invoice_id) if isinstance(invoice_id, (str, int)) and not isinstance(invoice_id, bool) else ""
-    if not re.fullmatch(r"[1-9][0-9]{0,19}", identifier):
+    hosts = {"bandwagon": {"bandwagonhost.com", "www.bandwagonhost.com"}, "dmit": {"www.dmit.io"}}
+    if provider not in hosts or not re.fullmatch(r"[1-9][0-9]{0,39}", identifier):
         return "UNAVAILABLE"
     if not isinstance(value, str) or not _plain(value) or len(value) > 2048:
         return "UNAVAILABLE"
     try:
         url = urlsplit(value)
-        if (url.scheme != "https" or url.netloc not in {"bandwagonhost.com", "www.bandwagonhost.com"}
+        if (url.scheme != "https" or url.netloc not in hosts[provider]
                 or url.path != "/viewinvoice.php" or url.fragment
                 or url.query != f"id={identifier}"):
             return "UNAVAILABLE"
@@ -234,6 +235,33 @@ def _payment_total(timing: Mapping[str, Any]) -> str:
             value = collection.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0:
                 return f"{value / 1000:.3f} sec"
+    return "UNKNOWN"
+
+
+def _payment_timestamp(timing: Mapping[str, Any], name: str, mark: str, *fallbacks: Any) -> str:
+    """Use recorded timezone-aware timestamps, never infer order completion."""
+    for value in (_stage(timing, name, mark), *fallbacks):
+        if not isinstance(value, str):
+            continue
+        try:
+            stamp = datetime.fromisoformat(value)
+            if stamp.tzinfo is not None and stamp.utcoffset() is not None:
+                return stamp.astimezone(timezone.utc).isoformat(timespec="milliseconds")
+        except ValueError:
+            pass
+    return "UNKNOWN"
+
+
+def _payment_elapsed(timing: Mapping[str, Any], detected: str, ready: str) -> str:
+    duration = _payment_total(timing)
+    if duration != "UNKNOWN":
+        return duration
+    try:
+        seconds = (datetime.fromisoformat(ready) - datetime.fromisoformat(detected)).total_seconds()
+        if seconds >= 0:
+            return f"{seconds:.3f} sec (wall-clock)"
+    except ValueError:
+        pass
     return "UNKNOWN"
 
 
@@ -328,19 +356,26 @@ class EmailNotifier:
         if result := self._configuration_result():
             return result
         try:
+            from autograb.core.errors import AutoGrabError
+            from autograb.core.purchase_state import assert_payment_ready
             identity = intent.get("intent_id", intent.get("id"))
+            provider = product.provider
+            merchant = {"bandwagon": "bandwagonhost.com", "dmit": "www.dmit.io"}.get(provider)
             invoice_id = intent.get("invoice_id")
             order_id = intent.get("order_id")
-            payment_url = safe_invoice_url(intent.get("payment_url"), invoice_id)
+            payment_url = safe_invoice_url(intent.get("payment_url"), invoice_id, provider)
             evidence = intent.get("verification", {})
             if (not isinstance(evidence, Mapping) or not identity
                     or intent.get("state", intent.get("status")) not in {"PAYMENT_READY", "WAITING_FOR_USER"}
                     or intent.get("origin") != "REAL"
-                    or intent.get("provider") != "bandwagon" or str(intent.get("product_id")) != product.product_id
+                    or merchant is None or intent.get("provider") != provider
+                    or event.get("provider", provider) != provider or event.get("simulated", False) is not False
+                    or str(intent.get("product_id")) != product.product_id
                     or not isinstance(order_id, (str, int)) or isinstance(order_id, bool)
-                    or not re.fullmatch(r"[1-9][0-9]{0,19}", str(order_id))
+                    or not re.fullmatch(r"[1-9][0-9]{0,39}", str(order_id))
                     or evidence.get("source") != "REAL_SITE"
-                    or evidence.get("merchant") != "bandwagonhost.com"
+                    or evidence.get("merchant") != merchant or evidence.get("provider", provider) != provider
+                    or ("login_required" in evidence and type(evidence["login_required"]) is not bool)
                     or str(evidence.get("product_id")) != product.product_id
                     or str(evidence.get("order_id")) != str(order_id)
                     or str(evidence.get("invoice_id")) != str(invoice_id)
@@ -350,46 +385,60 @@ class EmailNotifier:
                     or str(evidence.get("invoice_status", "")).casefold() != "unpaid"
                     or payment_url == "UNAVAILABLE"):
                 return NotificationResult("NOTIFICATION_FAILED", "PAYMENT_NOT_VERIFIED", "An independently verified unpaid invoice is required.")
+            try:
+                assert_payment_ready({**evidence, "provider": provider})
+            except AutoGrabError:
+                return NotificationResult("NOTIFICATION_FAILED", "PAYMENT_NOT_VERIFIED", "An independently verified unpaid invoice is required.")
             price, billing = _prices(product)
-            price = _text(intent.get("amount", evidence.get("amount"))) if intent.get("amount", evidence.get("amount")) is not None else price
-            billing = _text(intent.get("billing", evidence.get("billing"))) if intent.get("billing", evidence.get("billing")) is not None else billing
+            price = _text(evidence.get("amount", intent.get("amount"))) if evidence.get("amount", intent.get("amount")) is not None else price
+            cents, currency = evidence.get("amount_cents"), evidence.get("currency")
+            if type(cents) is int and 0 < cents < 10**12 and currency in {"USD", "EUR", "CNY", "HKD", "CAD", "GBP"}:
+                price = f"{currency} {cents // 100}.{cents % 100:02d}"
+            billing = _text(evidence.get("billing", intent.get("billing"))) if evidence.get("billing", intent.get("billing")) is not None else billing
+            detected = _payment_timestamp(timing, "detection", "T0", event.get("detected_at"), event.get("created_at"))
+            created = _payment_timestamp(timing, "order_created", "T6", intent.get("order_created_at"))
+            ready = _payment_timestamp(timing, "payment_ready", "T8", intent.get("payment_ready_at"))
+            label = PROVIDER_LABELS[provider]
             fields = (
-                ("Provider", "BandwagonHost"),
+                ("Provider", label),
                 ("Event", _text(event.get("event_type", event.get("type")))),
                 ("Product", _text(product.name)),
                 ("Product ID", _text(product.product_id)),
                 ("Price", price), ("Billing", billing),
                 ("Order ID", str(order_id)), ("Invoice ID", str(invoice_id)),
                 ("Status", "PAYMENT_READY"),
-                ("Detected", _stage(timing, "detection", "T0")),
-                ("Order Created", _stage(timing, "order_created", "T6")),
-                ("Payment Ready", _stage(timing, "payment_ready", "T8")),
+                ("Detected", detected),
+                ("Order created", created),
+                ("Payment ready", ready),
                 ("Email", datetime.now(timezone.utc).isoformat(timespec="milliseconds") + " (message prepared; SMTP acceptance is recorded locally afterward)"),
-                ("Detection → Payment Ready", _payment_total(timing)),
+                ("Detection → Payment Ready", _payment_elapsed(timing, detected, ready)),
                 ("Payment deadline", _text(intent.get("payment_deadline", evidence.get("deadline")))),
-                ("OPEN PAYMENT PAGE", payment_url),
+                ("Official payment URL", payment_url),
             )
             body = "AutoGrab\n\n" + "\n\n".join(f"{label}:\n{value}" for label, value in fields)
-            body += ("\n\nLogin may be required. Use your own BandwagonHost account to open the official invoice.\n"
+            login = "Login required." if evidence.get("login_required") is True else "Login may be required on this phone or browser."
+            body += (f"\n\n{login} Use your own {label} account to open the official invoice HTTPS link above.\n"
+                     "Order created and Payment ready are AutoGrab observation times, not a server processing-time guarantee.\n"
                      "AutoGrab has not submitted payment. You decide whether to pay.\n"
                      "An unpaid invoice does not establish inventory reservation.\n"
                      "SMTP acceptance does not confirm inbox delivery.\n")
-            message = self._message("🚨🚨 [PAY NOW] BandwagonHost VPS 已进入付款阶段", body, f"payment-ready:{identity}")
+            message = self._message("🚨🚨 [PAY NOW] AutoGrab Payment Ready", body, f"payment-ready:{provider}:{identity}")
         except Exception:
             return NotificationResult("NOTIFICATION_FAILED", "INVALID_MESSAGE", "Notification content could not be prepared.")
         return await asyncio.to_thread(self._send, message)
 
-    async def send_session_required(self, notice_id: str, status: str = "LOGIN_REQUIRED") -> NotificationResult:
+    async def send_session_required(self, notice_id: str, status: str = "LOGIN_REQUIRED", *, provider: str = 'bandwagon') -> NotificationResult:
         """Only explicit status strings enter a notice; no private page content."""
         if result := self._configuration_result():
             return result
-        if status not in {"LOGIN_REQUIRED", "SESSION_EXPIRED", "CAPTCHA_REQUIRED"} or not isinstance(notice_id, str) or not notice_id:
+        if provider not in {'bandwagon', 'dmit'} or status not in {"LOGIN_REQUIRED", "SESSION_EXPIRED", "CAPTCHA_REQUIRED"} or not isinstance(notice_id, str) or not notice_id:
             return NotificationResult("NOTIFICATION_FAILED", "INVALID_NOTICE", "An explicit session notice is required.")
-        body = (f"AutoGrab\n\nProvider:\nBandwagonHost\n\nStatus:\n{status}\n\n"
-                "USER ACTION REQUIRED: Open AutoGrab's dedicated browser and complete login or verification yourself.\n"
+        label = PROVIDER_LABELS[provider]
+        body = (f"AutoGrab\n\nProvider:\n{label}\n\nStatus:\n{status}\n\n"
+                "USER ACTION REQUIRED: Open the original normal Edge tab and complete login or verification yourself.\n"
                 "New order creation is blocked. No automatic payment is performed.\n"
                 "No password or verification code should be sent by email or chat.\n")
-        message = self._message("[AUTOGRAB] BandwagonHost 需要本人登录或验证", body, f"session:{notice_id}:{status}")
+        message = self._message(f"[AUTOGRAB] {label} 需要本人登录或验证", body, f"session:{provider}:{notice_id}:{status}")
         return await asyncio.to_thread(self._send, message)
 
     async def send_edge_human_required(self, notice_id: str, status: str) -> NotificationResult:
@@ -403,7 +452,7 @@ class EmailNotifier:
         body = (f"AutoGrab Edge Companion\n\n当前商家\n\nStatus: {status}\n\n"
                 "AutoGrab 已暂停，请在当前 Microsoft Edge 窗口中本人完成登录或真人验证。\n"
                 "验证完成后，使用同一个 AutoGrab intent 继续；不要重复创建购买任务。\n"
-                "本次仅为 DRY RUN；LIVE OFF，没有创建订单或付款。\n"
+                "订单结果以已保存的状态和商家核实结果为准；自动付款保持关闭。\n"
                 "不要在聊天或邮件中提供密码、验证码或浏览器会话数据。\n")
         message = self._message("[AUTOGRAB] Edge 需要本人登录或验证", body, notice_id)
         return await asyncio.to_thread(self._send, message)

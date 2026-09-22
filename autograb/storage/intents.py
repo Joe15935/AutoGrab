@@ -10,13 +10,13 @@ Only safe public identifiers belong here; never account, form or session data.
 from __future__ import annotations
 
 from contextlib import nullcontext
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import re
 import sqlite3
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from autograb.core.models import Product
 from autograb.edge.protocol import product_identity
@@ -28,14 +28,16 @@ STATES = frozenset({
     "INTENT_CREATED", "CART_READY", "CHECKOUT_READY", "ORDER_SUBMITTING",
     "RECONCILIATION_REQUIRED", "ORDER_SUBMIT_FAILED", "ORDER_CREATED",
     "INVOICE_CREATED", "PAYMENT_URL_READY", "PAYMENT_READY", "WAITING_FOR_USER",
+    "ORDER_PRECHECK", "ORDER_UNCERTAIN", "RECONCILING", "INVOICE_SEARCHING", "PAYMENT_LINK_SEARCHING",
     *TERMINAL_STATES,
 })
 _RESULT_STATES = frozenset({
     "ORDER_SUBMITTING", "RECONCILIATION_REQUIRED", "ORDER_SUBMIT_FAILED",
     "ORDER_CREATED", "INVOICE_CREATED", "PAYMENT_URL_READY", "PAYMENT_READY",
     "WAITING_FOR_USER",
+    "ORDER_UNCERTAIN", "RECONCILING", "INVOICE_SEARCHING", "PAYMENT_LINK_SEARCHING",
 })
-_PRE_SUBMIT = frozenset({"INTENT_CREATED", "CART_READY", "CHECKOUT_READY"})
+_PRE_SUBMIT = frozenset({"INTENT_CREATED", "CART_READY", "CHECKOUT_READY", "ORDER_PRECHECK"})
 
 
 def _migrate_provider_constraint(store):
@@ -98,7 +100,8 @@ def _identifier(value: str | None, name: str, *, numeric: bool = False) -> str |
     return value
 
 
-def validate_payment_url(value: str | None, invoice_id: str | None = None) -> str | None:
+def validate_payment_url(value: str | None, invoice_id: str | None = None,
+                         provider: str = "bandwagon") -> str | None:
     """Allow the official invoice link only, without credentials or token query.
 
     This is URL hygiene, NOT proof that a payment page is valid. The caller must
@@ -108,8 +111,9 @@ def validate_payment_url(value: str | None, invoice_id: str | None = None) -> st
         return None
     if not isinstance(value, str) or any(ord(character) <= 32 for character in value):
         raise ValueError("Invalid payment URL")
+    merchant = {"bandwagon": "bandwagonhost.com", "dmit": "www.dmit.io"}.get(provider)
     parts = urlsplit(value)
-    if (parts.scheme != "https" or parts.netloc != "bandwagonhost.com"
+    if (merchant is None or parts.scheme != "https" or parts.netloc != merchant
             or parts.path != "/viewinvoice.php" or parts.fragment):
         raise ValueError("Invalid payment URL")
     query = parse_qs(parts.query, keep_blank_values=True)
@@ -119,7 +123,7 @@ def validate_payment_url(value: str | None, invoice_id: str | None = None) -> st
     if invoice_id is not None and linked_invoice != invoice_id:
         raise ValueError("Payment URL invoice mismatch")
     # Canonical spelling rejects encoded keys/values and trailing separators.
-    canonical = f"https://bandwagonhost.com/viewinvoice.php?id={linked_invoice}"
+    canonical = f"https://{merchant}/viewinvoice.php?id={linked_invoice}"
     if value != canonical:
         raise ValueError("Invalid payment URL")
     return canonical
@@ -170,6 +174,11 @@ class IntentStore:
             columns = {row[1] for row in self.connection.execute("PRAGMA table_info(purchase_intents)")}
             if "terminal_evidence_json" not in columns:
                 self.connection.execute("ALTER TABLE purchase_intents ADD COLUMN terminal_evidence_json TEXT")
+            for name in ("submission_nonce", "order_precheck_json", "order_created_at",
+                         "payment_ready_at", "notification_claimed_at"):
+                if name not in columns:
+                    self.connection.execute(f"ALTER TABLE purchase_intents ADD COLUMN {name} TEXT")
+            self.connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS purchase_submission_nonce ON purchase_intents(submission_nonce) WHERE submission_nonce IS NOT NULL")
             self.connection.execute("""
                 CREATE UNIQUE INDEX IF NOT EXISTS purchase_intents_active_product
                 ON purchase_intents(provider, product_id)
@@ -188,6 +197,7 @@ class IntentStore:
         value["payment_page_verified"] = bool(value["payment_page_verified"])
         value["verification"] = json.loads(value.pop("verification_json") or "null")
         value["terminal_evidence"] = json.loads(value.pop("terminal_evidence_json") or "null")
+        value["order_precheck"] = json.loads(value.pop("order_precheck_json") or "null")
         return value
 
     def get(self, intent_id: str) -> dict[str, Any] | None:
@@ -297,15 +307,87 @@ class IntentStore:
             """, (now, now, intent_id))
             return cursor.rowcount == 1
 
+    def set_order_precheck(self, intent_id: str, evidence: dict[str, Any]) -> dict[str, Any]:
+        """Bind a fresh read-only Edge precheck to the existing intent's quote."""
+        from autograb.edge.order_protocol import validate_observation
+        with self.store._transaction():
+            current = self._required(intent_id)
+            if current["state"] not in {"CHECKOUT_READY", "ORDER_PRECHECK"} or current["submit_started_at"] is not None:
+                raise ValueError("Order precheck requires an unsubmitted checkout")
+            validate_observation(evidence, current["provider"])
+            if evidence["outcome"] != "PRECHECK_READY":
+                raise ValueError("Order boundary has not passed precheck")
+            observed = datetime.fromisoformat(evidence["observed_at"].replace("Z", "+00:00"))
+            if not timedelta(0) <= datetime.now(timezone.utc) - observed <= timedelta(seconds=60):
+                raise ValueError("Order precheck is stale")
+            event = self.store.get_event(current["event_id"])
+            quote = {"cents": evidence["amount_cents"], "currency": evidence["currency"], "period": evidence["billing"]}
+            if not any(all(price.get(k) == v for k, v in quote.items()) and price.get("available") is True
+                       for price in event["product"]["prices"]):
+                raise ValueError("Order precheck price or billing mismatch")
+            self.connection.execute("UPDATE purchase_intents SET state='ORDER_PRECHECK',order_precheck_json=?,updated_at=? WHERE intent_id=?",
+                                    (json.dumps(evidence, sort_keys=True), _now(), intent_id))
+            return self._required(intent_id)
+
+    def begin_order_submission(self, intent_id: str, nonce: str, precheck_id: str,
+                               *, submitted_at: str | None = None) -> bool:
+        """Commit exactly one submission before any bridge dispatch; never retry.
+
+        Authorization lives in the separate ephemeral smoke guard. This ledger
+        method grants no network access and cannot reset a consumed nonce.
+        """
+        if not isinstance(nonce, str) or str(UUID(nonce)) != nonce:
+            raise ValueError("Submission nonce must be a UUID")
+        from autograb.edge.protocol import timestamp
+        submitted_at = submitted_at or _now()
+        if not 0 <= (datetime.now(timezone.utc)-timestamp(submitted_at)).total_seconds() <= 60:
+            raise ValueError("Submission timestamp is stale")
+        with self.store._transaction():
+            current = self._required(intent_id)
+            check = current["order_precheck"]
+            if (current["provider"] not in {"bandwagon", "dmit"} or current["state"] != "ORDER_PRECHECK"
+                    or current["submit_started_at"] is not None or current["submission_nonce"] is not None
+                    or not check or check.get("precheck_id") != precheck_id):
+                return False
+            observed = datetime.fromisoformat(check["observed_at"].replace("Z", "+00:00"))
+            if not timedelta(0) <= datetime.now(timezone.utc) - observed <= timedelta(seconds=60):
+                return False
+            cursor = self.connection.execute("""UPDATE purchase_intents SET state='ORDER_SUBMITTING',
+                submission_nonce=?,submit_started_at=?,updated_at=? WHERE intent_id=?
+                AND submit_started_at IS NULL AND submission_nonce IS NULL AND state='ORDER_PRECHECK'""",
+                (nonce, submitted_at, _now(), intent_id))
+            return cursor.rowcount == 1
+
+    def claim_payment_notification(self, intent_id: str) -> bool:
+        """At most one automatic notification attempt, including uncertain SMTP."""
+        with self.store._transaction():
+            cursor = self.connection.execute("""UPDATE purchase_intents SET notification_claimed_at=?
+                WHERE intent_id=? AND state='PAYMENT_READY' AND payment_page_verified=1
+                AND notification_claimed_at IS NULL""", (_now(), intent_id))
+            return cursor.rowcount == 1
+
+    def searching(self, intent_id: str) -> dict[str, Any]:
+        with self.store._transaction():
+            current = self._required(intent_id)
+            state = current["state"]
+            if state == "ORDER_CREATED":
+                state = "INVOICE_SEARCHING"
+            elif state == "INVOICE_CREATED":
+                state = "PAYMENT_LINK_SEARCHING"
+            elif state in {"ORDER_UNCERTAIN", "RECONCILIATION_REQUIRED"}:
+                state = "RECONCILING"
+            self.connection.execute("UPDATE purchase_intents SET state=?,updated_at=? WHERE intent_id=?", (state, _now(), intent_id))
+            return self._required(intent_id)
+
     def mark_uncertain(self, intent_id: str) -> dict[str, Any]:
         with self.store._transaction():
             current = self._required(intent_id)
-            if current["state"] not in {"ORDER_SUBMITTING", "RECONCILIATION_REQUIRED"}:
+            if current["state"] not in {"ORDER_SUBMITTING", "RECONCILIATION_REQUIRED", "ORDER_UNCERTAIN", "RECONCILING"}:
                 raise ValueError("Only an unresolved submission can become uncertain")
             self.connection.execute("""
-                UPDATE purchase_intents SET state='RECONCILIATION_REQUIRED',updated_at=?
+                UPDATE purchase_intents SET state=?,updated_at=?
                 WHERE intent_id=?
-            """, (_now(), intent_id))
+            """, ("ORDER_UNCERTAIN" if current["submission_nonce"] else "RECONCILIATION_REQUIRED", _now(), intent_id))
             return self._required(intent_id)
 
     def _persist_result(self, intent_id: str, *, order_id: str | None = None,
@@ -329,7 +411,7 @@ class IntentStore:
             if current[name] is not None and value is not None and current[name] != value:
                 raise ValueError("Known order identifiers cannot be replaced")
             merged[name] = value if value is not None else current[name]
-        merged["payment_url"] = validate_payment_url(merged["payment_url"], merged["invoice_id"])
+        merged["payment_url"] = validate_payment_url(merged["payment_url"], merged["invoice_id"], current["provider"])
         if merged["order_id"] is None:
             raise ValueError("An observed order ID is required")
         if merged["payment_url"] is not None and merged["invoice_id"] is None:
@@ -356,10 +438,11 @@ class IntentStore:
         self.connection.execute("""
             UPDATE purchase_intents SET order_id=?,invoice_id=?,payment_url=?,
                 payment_page_verified=?,state=?,submit_finished_at=COALESCE(submit_finished_at,?),
-                verification_json=?,updated_at=? WHERE intent_id=?
+                verification_json=?,updated_at=?,order_created_at=COALESCE(order_created_at,?),
+                payment_ready_at=CASE WHEN ? THEN COALESCE(payment_ready_at,?) ELSE payment_ready_at END WHERE intent_id=?
         """, (merged["order_id"], merged["invoice_id"], merged["payment_url"],
               int(verified), state, now if current["submit_started_at"] else None,
-              json.dumps(evidence, sort_keys=True) if evidence is not None else None, now, intent_id))
+              json.dumps(evidence, sort_keys=True) if evidence is not None else None, now, now, int(verified), now, intent_id))
         return self._required(intent_id)
 
     @staticmethod
@@ -371,11 +454,13 @@ class IntentStore:
                             "payment_url", "invoice_status", "source"}
         if not isinstance(evidence, dict) or not required <= evidence.keys():
             raise ValueError("Payment verification evidence is incomplete")
-        if evidence.keys() - (required | {"amount", "billing", "deadline"}):
+        if evidence.keys() - (required | {"amount", "billing", "deadline", "provider", "login_required", "amount_cents", "currency", "observed_at"}):
             raise ValueError("Only public payment evidence may be persisted")
         if any(evidence[flag] is not True for flag in flags):
             raise ValueError("Payment page checks must all pass")
-        if evidence["merchant"] != "bandwagonhost.com" or evidence["invoice_status"] != "UNPAID":
+        merchant = {"bandwagon": "bandwagonhost.com", "dmit": "www.dmit.io"}.get(current["provider"])
+        if (merchant is None or evidence["merchant"] != merchant or evidence["invoice_status"] != "UNPAID"
+                or evidence.get("provider", "bandwagon") != current["provider"]):
             raise ValueError("Payment page must belong to the merchant and remain unpaid")
         if evidence["product_id"] != current["product_id"]:
             raise ValueError("Payment page product mismatch")
@@ -385,6 +470,14 @@ class IntentStore:
         allowed_sources = {"REAL_SITE"} if current["origin"] == "REAL" else {"MOCK", "SIMULATED"}
         if evidence["source"] not in allowed_sources:
             raise ValueError("Payment evidence origin mismatch")
+        if "login_required" in evidence and type(evidence["login_required"]) is not bool:
+            raise ValueError("Invalid payment login requirement")
+        if current.get("submission_nonce"):
+            check = current["order_precheck"]
+            if (not check or any(evidence.get(k) != check[v] for k, v in
+                    (("amount_cents", "amount_cents"), ("currency", "currency"), ("billing", "billing")))
+                    or type(evidence.get("amount_cents")) is not int):
+                raise ValueError("Payment evidence must match the prechecked quote")
         amount = evidence.get("amount")
         if amount is not None and (not isinstance(amount, str) or len(amount) > 80
                 or not re.fullmatch(r"[A-Z$€£¥₹0-9., +()-]+", amount) or not re.search(r"\d", amount)):
@@ -417,7 +510,8 @@ class IntentStore:
     def reconcile(self, intent_id: str, status: str, *, order_id: str | None = None,
                   invoice_id: str | None = None, payment_url: str | None = None,
                   payment_page_verified: bool = False,
-                  verification: dict[str, Any] | None = None) -> dict[str, Any]:
+                  verification: dict[str, Any] | None = None,
+                  absence_evidence: dict[str, Any] | None = None) -> dict[str, Any]:
         """Record provider evidence. ABSENT is not permission to resubmit.
 
         FOUND can attach a previously existing order before any dispatch.
@@ -429,6 +523,18 @@ class IntentStore:
             current = self._required(intent_id)
             if current["state"] in TERMINAL_STATES:
                 raise ValueError("Cannot reconcile a terminal intent")
+            if status == "ABSENT" and current["submission_nonce"]:
+                from autograb.edge.order_protocol import validate_observation
+                from autograb.edge.protocol import timestamp
+                validate_observation(absence_evidence, current["provider"])
+                if (absence_evidence["outcome"] != "NO_ORDER_FOUND"
+                        or absence_evidence["submission_nonce"] != current["submission_nonce"]
+                        or timestamp(absence_evidence["observed_at"]) < timestamp(current["submit_started_at"])
+                        or not 0 <= (datetime.now(timezone.utc)-timestamp(absence_evidence["observed_at"])).total_seconds() <= 120
+                        or any(absence_evidence[k] != current["order_precheck"][k] for k in ("amount_cents", "currency", "billing", "tab_id"))):
+                    raise ValueError("Order absence scope is unverified")
+            elif absence_evidence is not None:
+                raise ValueError("Absence evidence is only valid for a dispatched absent order")
             if status == "FOUND":
                 self._persist_result(intent_id, order_id=order_id, invoice_id=invoice_id,
                                      payment_url=payment_url,
@@ -444,7 +550,7 @@ class IntentStore:
                     raise ValueError("No dispatched submission to reconcile")
                 state = current["state"]
                 if current["order_id"] is None:
-                    state = "ORDER_SUBMIT_FAILED" if status == "ABSENT" else "RECONCILIATION_REQUIRED"
+                    state = "ORDER_SUBMIT_FAILED" if status == "ABSENT" else "ORDER_UNCERTAIN" if current["submission_nonce"] else "RECONCILIATION_REQUIRED"
                 self.connection.execute("""
                     UPDATE purchase_intents SET state=?,updated_at=?,
                         submit_finished_at=CASE WHEN ?='ABSENT'
@@ -514,7 +620,8 @@ class IntentStore:
                 "SELECT intent_id FROM purchase_intents WHERE state='ORDER_SUBMITTING'"
             ).fetchall()
             self.connection.execute("""
-                UPDATE purchase_intents SET state='RECONCILIATION_REQUIRED',updated_at=?
+                UPDATE purchase_intents SET state=CASE WHEN submission_nonce IS NULL THEN
+                    'RECONCILIATION_REQUIRED' ELSE 'ORDER_UNCERTAIN' END,updated_at=?
                 WHERE state='ORDER_SUBMITTING'
             """, (_now(),))
             return [self._required(row["intent_id"]) for row in rows]
@@ -524,6 +631,7 @@ class IntentStore:
         return [self._intent(row) for row in self.connection.execute("""
             SELECT * FROM purchase_intents
             WHERE state IN ('ORDER_SUBMITTING','RECONCILIATION_REQUIRED',
-                            'ORDER_CREATED','INVOICE_CREATED','PAYMENT_URL_READY')
+                            'ORDER_CREATED','INVOICE_CREATED','PAYMENT_URL_READY',
+                            'ORDER_UNCERTAIN','RECONCILING','INVOICE_SEARCHING','PAYMENT_LINK_SEARCHING')
             ORDER BY created_at
         """)]  # type: ignore[misc]

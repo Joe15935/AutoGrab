@@ -7,14 +7,17 @@ store. No external monitor code or browser session is imported.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from decimal import Decimal
 import re
+import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from autograb.core.errors import AutoGrabError
 from autograb.core.models import Product
+from autograb.core.rate_budget import PublicHTTPError
 from .dmit import _Document
 
 ORIGIN = "https://app.vmiss.com"
@@ -132,9 +135,22 @@ class VMISSProvider:
     provider_name = "vmiss"
     source = CATALOG_URL
 
-    def __init__(self, browser=None, log=None):
+    def __init__(self, browser=None, log=None, *, budget=None, settings=None, clock=None):
         self.browser, self.log = browser, log
+        self.budget = budget
+        self._clock = clock or time.time
+        interval = (settings or {}).get("interval_seconds", 900)
+        self.interval = max(900, interval) if type(interval) in (int, float) and 0 < interval <= 86400 else 900
         self.last_products = []
+        self._completed_at = None
+        self._reset_pending()
+
+    def _reset_pending(self):
+        self._queue, self._visited, self._pending = [CATALOG_URL], set(), {}
+
+    @property
+    def rate_status(self):
+        return self.budget.status("vmiss", "global", "catalog") if self.budget else None
 
     def _http(self, url):
         if not _store_url(url):
@@ -146,13 +162,20 @@ class VMISSProvider:
                 raw = response.read(MAX_PAGE_BYTES + 1)
                 if response.status != 200 or len(raw) > MAX_PAGE_BYTES:
                     raise AutoGrabError("CATALOG_UNAVAILABLE")
-                return raw.decode("utf-8", errors="strict")
+                html = raw.decode("utf-8", errors="strict")
+                try:
+                    _normal_document(html)
+                except AutoGrabError as error:
+                    raise PublicHTTPError(error.code, response.headers.get("Retry-After")) from None
+                return html
         except HTTPError as error:
-            raise AutoGrabError(_http_error_code(error)) from None
+            raise PublicHTTPError(_http_error_code(error), error.headers.get("Retry-After")) from None
         except (URLError, OSError, UnicodeError):
             raise AutoGrabError("NETWORK_ERROR") from None
 
     async def discover_products(self):
+        if self.budget:
+            return await self._discover_budgeted()
         queue, visited, products = [CATALOG_URL], set(), {}
         while queue:
             url = queue.pop(0)
@@ -173,8 +196,53 @@ class VMISSProvider:
         self.last_products = list(products.values())
         return self.last_products
 
+    async def _discover_budgeted(self):
+        # One actual request per shared slot, not one request for every product.
+        # A multi-page scan is private scratch until the complete catalogue exists.
+        ticket = self.budget.claim("vmiss", "global", "catalog", interval_seconds=self.interval)
+        self._completed_at = None
+        if ticket.probe:
+            self._reset_pending()
+        url = self._queue.pop(0)
+        try:
+            page, groups = _parse_page(await asyncio.to_thread(self._http, url), url)
+            self._visited.add(url)
+            for product in page:
+                previous = self._pending.get(product.product_id)
+                if previous and previous[0] != product:
+                    raise AutoGrabError("CATALOG_IDENTITY_CONFLICT")
+                self._pending[product.product_id] = product, url
+            self._queue.extend(group for group in groups if group not in self._visited and group not in self._queue)
+            if len(self._visited) + len(self._queue) > MAX_GROUPS:
+                raise AutoGrabError("CATALOG_LIMIT_REACHED")
+            if not self._queue and not self._pending:
+                raise AutoGrabError("CATALOG_EMPTY")
+        except Exception as error:
+            code = error.code if isinstance(error, AutoGrabError) else "NETWORK_ERROR"
+            self.budget.failure(ticket, code, retry_after=getattr(error, "retry_after", None),
+                limited=code in {"RATE_LIMITED", "HTTP_403", "HUMAN_CHALLENGE_REQUIRED"})
+            self._reset_pending()
+            raise AutoGrabError(code) from None
+        if not self.budget.success(ticket):
+            self._reset_pending()
+            raise AutoGrabError("RATE_PROBE_EXPIRED")
+        if self._queue:
+            raise AutoGrabError("CATALOG_INCOMPLETE")
+        now = self._clock()
+        self.last_products = [p if page_url == url else replace(p, availability="UNKNOWN")
+                              for p, page_url in self._pending.values()]
+        self._completed_at = now
+        self._reset_pending()
+        return self.last_products
+
     async def get_product_details(self, product_id):
-        for product in await self.discover_products():
+        if self.budget:
+            if self._completed_at is None or self._clock() - self._completed_at >= self.interval:
+                raise AutoGrabError("STOCK_UNKNOWN")
+            products = self.last_products
+        else:
+            products = await self.discover_products()
+        for product in products:
             if product.product_id == product_id:
                 return product
         raise AutoGrabError("PRODUCT_MISSING")

@@ -1,4 +1,47 @@
-# Phase 2R implementation contract
+# Edge Companion implementation contract
+
+## v0.5 shared order extension (current)
+
+The historical Phase 2R contract below remains the cart/checkout regression
+baseline. Envelope version 1 and the existing Native Messaging transport are
+retained. v0.5 adds only fixed `ORDER_PRECHECK`, `SUBMIT_ORDER`, `RECONCILE_ORDER`
+commands and a strictly correlated `ORDER_OBSERVATION` event, for BWH/DMIT.
+The original unstructured ORDER_CREATED/INVOICE_FOUND/PAYMENT_READY events
+remain rejected. No arbitrary JavaScript, selectors or endpoint are accepted.
+
+All three commands bind the persisted provider/product, exact five-field price
+payload and explicit existing Edge tab. Precheck/reconcile use DRY_RUN mode.
+Submit requires REAL_ORDER_SMOKE_TEST mode and a separate one-use UUID permit
+with precheck ID, UTC issued/expires times (at most 60 seconds), and an explicit
+armed boolean. Core first commits ORDER_SUBMITTING, nonce and issuance time.
+The native dispatcher rereads that identity, primary state, kill flags and an
+ephemeral nonce-specific kernel lock held by the foreground authorizer. Process
+death releases the lock; file presence grants no permission. Cancellation and
+timeout halt pending transport, preserving possible submitted orders as uncertain.
+Extension persists its own consumed nonce/document journal before one normal
+click. A reconnect, reload, cancel or ordinary ARM never grants another click.
+
+Reconcile carries the committed nonce/time and immutable known order/invoice
+IDs. Observations bind command ID, connection, tab, fresh time, exact quote and
+product. A newly discovered order needs a matching creation-time scope. Strong
+absence additionally requires complete search scope and time window; the current
+DOM adapter never infers absence from a missing selector. Even proven absence
+does not automatically resubmit. An observed official invoice link permits one
+read-only invoice navigation; a subsequent explicit reconciliation verifies the
+new page. There is no account crawler or polling loop for purchase endpoints.
+
+PAYMENT_READY additionally requires the exact official HTTPS viewinvoice URL,
+visible matching amount/product, known order/invoice IDs, and explicit unpaid
+evidence on that current page. No payment action is exposed. Exact schemas live
+in `autograb/edge/order_protocol.py` and `edge-extension/protocol.js` and are
+cross-language tested.
+
+**Experimental / real-site unverified:** no-charge and order/receipt selectors
+are modeled in clearly marked offline fixtures. Neither real BWH nor DMIT order
+submission meets a verified no-charge contract yet. Missing proof fails closed;
+never inject fixture markers into a live merchant page to satisfy the guard.
+
+## Historical Phase 2R baseline
 
 Official MV3 Native Messaging, no TCP/CDP/session export. Python Core persists transport in the existing SQLite database. Edge starts the native host using `connectNative`; the host polls durable Core commands. First release implements only DRY_RUN through checkout. START_CHECKOUT is recognized but rejected as LIVE_NOT_ENABLED. No order/payment mutation exists.
 

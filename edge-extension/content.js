@@ -3,7 +3,8 @@
   globalThis.__autoGrabCompanionInstalled = true;
   const READS = new Set(["detectPage", "verifyProduct", "verifyCart", "verifyCheckout"]);
   const ACTIONS = new Set(["selectBillingPeriod", "configureProduct", "addToCart", "openCheckout"]);
-  const ALLOWED = new Set(["ok", "stage", "code", "login", "challenge", "cart_id", "action"]);
+  const ORDER_OPS = {orderPrecheck: "precheck", submitOrder: "submitOrder", reconcileOrder: "reconcileOrder"};
+  const ALLOWED = new Set(["ok", "stage", "code", "login", "challenge", "cart_id", "action", "outcome", "order_id", "invoice_id", "amount_cents", "currency", "official_url", "unpaid", "observed_at", "created_at", "product_verified", "billing", "no_charge_verified", "scope_complete", "time_window_verified", "submission_nonce"]);
   const seenTickets = new Set();
   const providers = {
     bandwagon: {origins: ["https://bandwagonhost.com"], adapter: "AutoGrabBandwagon"},
@@ -17,7 +18,7 @@
     if (!result || typeof result !== "object") throw new Error("INVALID_ADAPTER_RESULT");
     const output = {};
     for (const [key, value] of Object.entries(result)) {
-      if (ALLOWED.has(key) && ["string", "boolean"].includes(typeof value)) output[key] = value;
+      if (ALLOWED.has(key) && (["string", "boolean"].includes(typeof value) || key === "amount_cents" && Number.isSafeInteger(value) && value > 0 && value < 1e12)) output[key] = value;
     }
     return output;
   }
@@ -37,12 +38,23 @@
   chrome.runtime.onMessage.addListener((request, sender, respond) => {
     const provider = request?.provider || "bandwagon", config = providers[provider];
     if (sender.id !== chrome.runtime.id || sender.tab || !config?.origins.includes(location.origin)) return false;
-    if (!request || request.source !== "AUTOGRAB_COMPANION" || !Object.keys(request).every(k => ["source", "provider", "operation", "expected", "ticket", "cart_id"].includes(k)) || !(READS.has(request.operation) || ACTIONS.has(request.operation)) || !validExpected(request.expected, provider)) return false;
+    if (!request || request.source !== "AUTOGRAB_COMPANION" || !Object.keys(request).every(k => ["source", "provider", "operation", "expected", "ticket", "cart_id", "order_context"].includes(k)) || !(READS.has(request.operation) || ACTIONS.has(request.operation) || Object.hasOwn(ORDER_OPS, request.operation)) || !validExpected(request.expected, provider)) return false;
     (async () => {
       const adapter = globalThis[config.adapter];
       if (!adapter) throw new Error("ADAPTER_UNAVAILABLE");
       const challenge = await adapter.detectChallenge();
       if (challenge === true || challenge?.challenge === "REQUIRED" || challenge?.stage === "HUMAN_CHALLENGE") return safeResult({ok: false, stage: "HUMAN_CHALLENGE", code: "HUMAN_CHALLENGE_REQUIRED", login: "UNKNOWN", challenge: "REQUIRED", action: "NONE"});
+      if (Object.hasOwn(ORDER_OPS, request.operation)) {
+        const context = request.order_context, keys = request.operation === "submitOrder" ? ["provider", "permit"] : request.operation === "reconcileOrder" ? ["provider", "submission_nonce", "submitted_at", "order_id", "invoice_id"] : ["provider"];
+        if (!["bandwagon", "dmit"].includes(provider) || !globalThis.AutoGrabOrders || !context || context.provider !== provider || Object.keys(context).sort().join(",") !== keys.sort().join(",")) throw new Error("ORDER_CONTEXT_INVALID");
+        if (request.operation === "submitOrder") {
+          if (typeof request.ticket !== "string" || request.ticket !== context.permit?.nonce || seenTickets.has(request.ticket) || actionRunning) return {ok: false, stage: "ORDER_UNCERTAIN", code: "MUTATION_TICKET_REJECTED", outcome: "UNKNOWN", login: "UNKNOWN", challenge: "NONE"};
+          seenTickets.add(request.ticket); actionRunning = true;
+          try { return safeResult(await globalThis.AutoGrabOrders.submitOrder(request.expected, context)); }
+          finally { actionRunning = false; }
+        }
+        return safeResult(await globalThis.AutoGrabOrders[ORDER_OPS[request.operation]](request.expected, context));
+      }
       if (ACTIONS.has(request.operation)) {
         if (provider !== "bandwagon") return {ok: false, stage: "UNKNOWN", code: "ADAPTER_READ_ONLY", action: "NONE", login: "UNKNOWN", challenge: "NONE"};
         if (typeof request.ticket !== "string" || !/^[0-9a-f-]{36}$/i.test(request.ticket) || seenTickets.has(request.ticket) || actionRunning) return {ok: false, stage: "UNKNOWN", code: "MUTATION_TICKET_REJECTED", login: "UNKNOWN", challenge: "NONE"};

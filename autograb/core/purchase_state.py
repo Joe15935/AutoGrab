@@ -14,9 +14,14 @@ class PurchaseState(StrEnum):
     OPENING_BROWSER = "OPENING_BROWSER"
     CART_READY = "CART_READY"
     CHECKOUT_READY = "CHECKOUT_READY"
+    ORDER_PRECHECK = "ORDER_PRECHECK"
     ORDER_SUBMITTING = "ORDER_SUBMITTING"
+    ORDER_UNCERTAIN = "ORDER_UNCERTAIN"
+    RECONCILING = "RECONCILING"
     ORDER_CREATED = "ORDER_CREATED"
+    INVOICE_SEARCHING = "INVOICE_SEARCHING"
     INVOICE_CREATED = "INVOICE_CREATED"
+    PAYMENT_LINK_SEARCHING = "PAYMENT_LINK_SEARCHING"
     PAYMENT_URL_READY = "PAYMENT_URL_READY"
     PAYMENT_READY = "PAYMENT_READY"
     WAITING_FOR_USER = "WAITING_FOR_USER"
@@ -43,15 +48,20 @@ EDGES = {
     PurchaseState.PRODUCT_VERIFIED: {PurchaseState.OPENING_BROWSER},
     PurchaseState.OPENING_BROWSER: {PurchaseState.CART_READY},
     PurchaseState.CART_READY: {PurchaseState.CHECKOUT_READY},
-    PurchaseState.CHECKOUT_READY: {PurchaseState.ORDER_SUBMITTING, PurchaseState.ORDER_ALREADY_EXISTS},
+    PurchaseState.CHECKOUT_READY: {PurchaseState.ORDER_PRECHECK, PurchaseState.ORDER_SUBMITTING, PurchaseState.ORDER_ALREADY_EXISTS},
+    PurchaseState.ORDER_PRECHECK: {PurchaseState.ORDER_SUBMITTING, PurchaseState.CHECKOUT_READY},
     PurchaseState.ORDER_SUBMITTING: {
-        PurchaseState.ORDER_CREATED, PurchaseState.RECONCILIATION_REQUIRED, PurchaseState.ORDER_SUBMIT_FAILED,
+        PurchaseState.ORDER_CREATED, PurchaseState.ORDER_UNCERTAIN, PurchaseState.RECONCILIATION_REQUIRED, PurchaseState.ORDER_SUBMIT_FAILED,
     },
+    PurchaseState.ORDER_UNCERTAIN: {PurchaseState.RECONCILING},
+    PurchaseState.RECONCILING: {PurchaseState.ORDER_CREATED, PurchaseState.ORDER_UNCERTAIN, PurchaseState.ORDER_SUBMIT_FAILED},
     PurchaseState.RECONCILIATION_REQUIRED: {PurchaseState.ORDER_ALREADY_EXISTS, PurchaseState.ORDER_SUBMIT_FAILED},
     PurchaseState.ORDER_ALREADY_EXISTS: {PurchaseState.ORDER_CREATED, PurchaseState.INVOICE_NOT_FOUND},
-    PurchaseState.ORDER_CREATED: {PurchaseState.INVOICE_CREATED, PurchaseState.INVOICE_NOT_FOUND},
+    PurchaseState.ORDER_CREATED: {PurchaseState.INVOICE_SEARCHING, PurchaseState.INVOICE_CREATED, PurchaseState.INVOICE_NOT_FOUND},
+    PurchaseState.INVOICE_SEARCHING: {PurchaseState.INVOICE_CREATED, PurchaseState.RECONCILING},
     PurchaseState.INVOICE_NOT_FOUND: {PurchaseState.RECONCILIATION_REQUIRED},
-    PurchaseState.INVOICE_CREATED: {PurchaseState.PAYMENT_URL_READY, PurchaseState.PAYMENT_URL_NOT_FOUND},
+    PurchaseState.INVOICE_CREATED: {PurchaseState.PAYMENT_LINK_SEARCHING, PurchaseState.PAYMENT_URL_READY, PurchaseState.PAYMENT_URL_NOT_FOUND},
+    PurchaseState.PAYMENT_LINK_SEARCHING: {PurchaseState.PAYMENT_URL_READY, PurchaseState.PAYMENT_READY, PurchaseState.RECONCILING},
     PurchaseState.PAYMENT_URL_NOT_FOUND: {PurchaseState.RECONCILIATION_REQUIRED},
     PurchaseState.PAYMENT_URL_READY: {PurchaseState.PAYMENT_READY, PurchaseState.PAYMENT_GATEWAY_SELECTION_REQUIRED},
     PurchaseState.PAYMENT_READY: {PurchaseState.WAITING_FOR_USER, PurchaseState.ORDER_EXPIRED, PurchaseState.ORDER_CANCELLED},
@@ -62,7 +72,7 @@ EDGES = {
 PRE_SUBMIT = {
     PurchaseState.INTENT_CREATED, PurchaseState.DETECTED, PurchaseState.VERIFYING,
     PurchaseState.PRODUCT_VERIFIED, PurchaseState.OPENING_BROWSER,
-    PurchaseState.CART_READY, PurchaseState.CHECKOUT_READY,
+    PurchaseState.CART_READY, PurchaseState.CHECKOUT_READY, PurchaseState.ORDER_PRECHECK,
 }
 HUMAN_BLOCKS = {
     PurchaseState.LOGIN_REQUIRED, PurchaseState.CAPTCHA_REQUIRED, PurchaseState.SESSION_EXPIRED,
@@ -95,11 +105,13 @@ def assert_payment_ready(evidence: dict | None) -> None:
     try:
         parsed = urlsplit(evidence.get("payment_url", ""))
         query = parse_qs(parsed.query, keep_blank_values=True)
+        provider = evidence.get("provider", "bandwagon")
+        merchant = {"bandwagon": "bandwagonhost.com", "dmit": "www.dmit.io"}.get(provider)
         valid = (
-            parsed.scheme == "https" and parsed.netloc == "bandwagonhost.com"
+            merchant is not None and parsed.scheme == "https" and parsed.netloc == merchant
             and parsed.path == "/viewinvoice.php" and not parsed.fragment
             and query == {"id": [evidence["invoice_id"]]}
-            and evidence["payment_url"] == f"https://bandwagonhost.com/viewinvoice.php?id={evidence['invoice_id']}"
+            and evidence["payment_url"] == f"https://{merchant}/viewinvoice.php?id={evidence['invoice_id']}"
         )
     except (TypeError, ValueError, AttributeError):
         valid = False
