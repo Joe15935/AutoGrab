@@ -26,7 +26,8 @@ and extension. The reviewed standalone monitors would duplicate those pieces
 and do not supply a verified five-provider normal-Edge checkout path. No new
 production service or dependency is required. Resource use remains one Python
 monitor, its local SQLite state, and the user's ordinary Edge process. No memory
-or CPU benchmark was performed; no numerical resource guarantee is claimed.
+or CPU benchmark was performed during the original expansion; v0.6 measurements
+are listed separately in its Script Mode report, with no resource guarantee.
 
 Minimal public-response/DOM fixtures are labelled as actual-schema excerpts or
 synthetic contracts. They contain no authentication state or copied application
@@ -83,3 +84,28 @@ already-present response metadata and stops; it includes no Shield workaround,
 fingerprint spoofing or private purchase API reconstruction. VMISS 1015 handling
 uses persisted cooldown and a single later probe, without adopting challenge or
 proxy approaches from third-party monitors.
+
+## v0.6.0-alpha operational reference
+
+QLScriptPublic — https://github.com/smallfawn/QLScriptPublic
+
+Reviewed as an architectural and operational reference for:
+- cron-driven automation
+- environment-variable configuration
+- notification abstraction
+- timed execution patterns
+
+No source code copied.
+Repository had no explicit license at time of review.
+
+QLScriptPublic was reviewed as an architectural/operational reference.
+No source code was copied due to the absence of an explicit repository license.
+
+The reviewed source revision, four bounded comparisons and precise observations
+are documented in [Script Mode research](docs/SCRIPT_MODE_RESEARCH.md). The
+upstream files remain outside the repository and release archives. AutoGrab's
+new facade, scheduling and wrappers are independently written extensions of
+its existing Core. No notification channel code or account automation was
+imported. QingLong and changedetection.io (Apache-2.0) were comparison references,
+not runtime dependencies; jd_ql_assistant (no declared license, last push 2023)
+was rejected for direct reuse.

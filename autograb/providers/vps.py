@@ -107,6 +107,8 @@ class VPSProvider:
     def _http(self, url):
         if url != CATALOG_URL and not _family_url(url):
             raise AutoGrabError("CATALOG_URL_INVALID")
+        from autograb.core.http_metrics import request_started
+        request_started()
         try:
             with build_opener(_NoRedirect).open(Request(url, headers={
                     "User-Agent": "AutoGrab/0.4 (public inventory monitor; DRY_RUN)",
@@ -116,7 +118,8 @@ class VPSProvider:
                     raise AutoGrabError("CATALOG_UNAVAILABLE")
                 return raw.decode("utf-8", errors="strict")
         except HTTPError as error:
-            raise AutoGrabError(_http_error_code(error)) from None
+            from autograb.core.rate_budget import PublicHTTPError
+            raise PublicHTTPError(_http_error_code(error), error.headers.get("Retry-After")) from None
         except (URLError, OSError, UnicodeError):
             raise AutoGrabError("NETWORK_ERROR") from None
 

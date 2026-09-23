@@ -38,6 +38,8 @@ class _NoRedirect(HTTPRedirectHandler):
 
 def _http_get(url):
     """No cookie jar, credentials, browser impersonation, or redirect following."""
+    from autograb.core.http_metrics import request_started
+    request_started()
     request = Request(url, headers={"Accept": "application/json",
         "User-Agent": "AutoGrab/0.4 (public inventory monitor)"})
     try:

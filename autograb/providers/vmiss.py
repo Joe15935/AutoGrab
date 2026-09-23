@@ -135,7 +135,7 @@ class VMISSProvider:
     provider_name = "vmiss"
     source = CATALOG_URL
 
-    def __init__(self, browser=None, log=None, *, budget=None, settings=None, clock=None):
+    def __init__(self, browser=None, log=None, *, budget=None, settings=None, clock=None, scan_state=None):
         self.browser, self.log = browser, log
         self.budget = budget
         self._clock = clock or time.time
@@ -144,6 +144,17 @@ class VMISSProvider:
         self.last_products = []
         self._completed_at = None
         self._reset_pending()
+        self.scan_state = scan_state
+        if scan_state:
+            saved = scan_state.load()
+            if saved:
+                self._queue = saved["queue"]
+                self._visited = set(saved["visited"])
+                self._pending = {p["product"]["product_id"]: (Product.from_dict(p["product"]), p["url"])
+                                 for p in saved["pending"]}
+                if (not self._queue or len(self._queue) + len(self._visited) > MAX_GROUPS
+                        or any(not _store_url(u) for u in [*self._queue, *self._visited])):
+                    self._reset_pending()
 
     def _reset_pending(self):
         self._queue, self._visited, self._pending = [CATALOG_URL], set(), {}
@@ -155,6 +166,8 @@ class VMISSProvider:
     def _http(self, url):
         if not _store_url(url):
             raise AutoGrabError("CATALOG_URL_INVALID")
+        from autograb.core.http_metrics import request_started
+        request_started()
         try:
             with build_opener(_NoRedirect).open(Request(url, headers={
                     "User-Agent": "AutoGrab/0.4 (public inventory monitor; DRY_RUN)",
@@ -222,17 +235,24 @@ class VMISSProvider:
             self.budget.failure(ticket, code, retry_after=getattr(error, "retry_after", None),
                 limited=code in {"RATE_LIMITED", "HTTP_403", "HUMAN_CHALLENGE_REQUIRED"})
             self._reset_pending()
+            if self.scan_state:
+                self.scan_state.clear()
             raise AutoGrabError(code) from None
         if not self.budget.success(ticket):
             self._reset_pending()
             raise AutoGrabError("RATE_PROBE_EXPIRED")
         if self._queue:
+            if self.scan_state:
+                self.scan_state.save({"queue": self._queue, "visited": sorted(self._visited),
+                    "pending": [{"product": p.to_dict(), "url": u} for p, u in self._pending.values()]})
             raise AutoGrabError("CATALOG_INCOMPLETE")
         now = self._clock()
         self.last_products = [p if page_url == url else replace(p, availability="UNKNOWN")
                               for p, page_url in self._pending.values()]
         self._completed_at = now
         self._reset_pending()
+        if self.scan_state:
+            self.scan_state.clear()
         return self.last_products
 
     async def get_product_details(self, product_id):

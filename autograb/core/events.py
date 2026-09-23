@@ -37,7 +37,7 @@ def _check_public(value):
 
 
 class EventLog:
-    def __init__(self, path: Path, *, mode: str = "DRY_RUN", provider: str = "bandwagon"):
+    def __init__(self, path: Path, *, mode: str = "DRY_RUN", provider: str = "bandwagon", echo=True):
         if mode not in {"DRY_RUN", "LIVE"}:
             raise ValueError("Unknown execution mode")
         self.path = path
@@ -45,6 +45,7 @@ class EventLog:
         if provider not in {"bandwagon", "dmit", "vmiss", "vps", "apple"}:
             raise ValueError("Unknown provider")
         self.provider = provider
+        self.echo = echo
 
     def write(self, event: str, **fields):
         if {"timestamp", "provider", "mode"} & fields.keys():
@@ -62,4 +63,5 @@ class EventLog:
                 stream.write(serialized + "\n")
         finally:
             os.close(descriptor)
-        print(serialized, flush=True)
+        if self.echo:
+            print(serialized, flush=True)

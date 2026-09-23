@@ -269,6 +269,8 @@ class DMITProvider:
         if not _catalog_url(url):
             raise AutoGrabError("DATA_SOURCE_UNAVAILABLE")
         request = Request(url, headers={"Accept": "text/html", "User-Agent": "AutoGrab/0.4 (public inventory monitor)"})
+        from autograb.core.http_metrics import request_started
+        request_started()
         try:
             response = build_opener(_NoRedirect).open(request, timeout=15)
         except HTTPError as error:
@@ -276,6 +278,7 @@ class DMITProvider:
         except Exception:
             raise AutoGrabError("NETWORK_ERROR") from None
         with response:
+            self.last_retry_after = response.headers.get("Retry-After")
             body = response.read(MAX_PAGE_BYTES + 1)
             if len(body) > MAX_PAGE_BYTES:
                 raise AutoGrabError("DATA_SOURCE_UNAVAILABLE")

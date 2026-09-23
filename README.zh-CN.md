@@ -1,8 +1,8 @@
 # AutoGrab
 
-多商家库存监控与结账辅助工具。共用现有 Python Core、SQLite、邮件和正常 Edge 扩展。
+轻量的多商家机会监控工具，可选用真实 Edge 浏览器辅助结账。共用现有 Core、SQLite、邮件和 Edge 扩展。
 
-**当前为实验性 alpha：默认 DRY_RUN、LIVE OFF、ARM OFF、REAL_ORDER_SMOKE_TEST_ARMED=false。真实订单 0，付款 0。** · [v0.5 Core report](docs/AUTOGRAB_V0_5_PAYMENT_READY_CORE_REPORT.md)
+**实验性 alpha：脚本默认 MONITOR；浏览器辅助仅为 DRY_RUN。LIVE OFF、ARM OFF、REAL_ORDER_SMOKE_TEST_ARMED=false。真实订单 0，付款 0。** · [v0.6 验收报告](docs/AUTOGRAB_V0_6_SCRIPT_MODE_REPORT.md) · [脚本／青龙完整说明](docs/SCRIPT_MODE.md)
 
 首次扫描建立基线，不把现有商品当新品。只有基线之后的新品、明确缺货后补货、新分类、新购买链接、新年付周期等变化进入机会判断。SPECIAL、PROMO、Annual 只是线索。价格只记录展示，不设价格、预算、性价比过滤。
 
@@ -22,29 +22,40 @@ v0.5 共用 L6/L7 生命周期及搬瓦工、DMIT 订单适配器：**IMPLEMENTE
 
 ## 安装与运行
 
-需要 Python 3.12–3.14 和 uv；扩展测试另需 Node.js。Native Messaging 安装器目前支持 macOS + Microsoft Edge。
+需要 Python 3.12–3.14。Mac 可双击 `安装 AutoGrab.command`（需已有 uv）；安装保留原有配置。公开监控只使用 Python 标准库，不需要浏览器、Web 服务或 Dashboard。`local` 可选依赖用于 Mac 钥匙串；Playwright 仅保留为可选历史测试依赖。Edge 助手目前支持 macOS + Microsoft Edge。
 
 ```sh
-uv sync --locked --python 3.12
-cp config/config.example.toml config/config.toml
-./start.sh baseline --provider all
-./start.sh monitor --once --provider all
+uv sync --locked --extra local --python 3.12
+./start.sh bandwagon
+./start.sh dmit --json
+./start.sh vmiss
+./start.sh vps
+./start.sh apple
+./start.sh all --json
 ./start.sh status
 ```
 
-可把 `all` 换为 `bandwagon`、`dmit`、`vmiss`、`vps`、`apple`。正式读取的配置是 `config/config.toml`；根目录 YAML 文件仅作配置说明。Apple 通过当前官方目录选择目标，无需手填SKU：
+没有机会就安静退出；`--json` 显示耗时、请求数、冷却与阻断原因。首次建立基线不触发通知。激活 `.venv/bin/activate` 后可直接使用 `autograb`。`--root` 或 `AUTOGRAB_ROOT` 指定固定的数据／配置目录，Cron 每次应使用同一个目录。
+
+`--mode QUERY` 读取最近保存的商家观察及基线，标明时间和 `fresh=false`，不访问网络、不写文件；需要刷新时用默认的 MONITOR。`--mode DRY_RUN --prepare-checkout` 仅在 Mac 允许机会邮件发送成功后准备 Edge，仍不下单。青龙薄脚本只允许 MONITOR / QUERY。旧的 `monitor --once --provider ...` 等入口保留。
+
+本轮实测搬瓦工48款、V.PS 66款可由轻量脚本读取，隔离的 Apple 自提测试也成功。DMIT 和 VMISS 公开 HTTP 被真人验证阻断，随后冷却期请求数为0；此前登录后的L5证据并不代表当前公开HTTP畅通。Apple 正式目标仍需本人配置。
+
+正式配置为 `config/config.toml`；YAML 仅为说明。Apple 通过当前官方目录选择目标，无需手填SKU：
 
 ```sh
 ./start.sh apple-configure
 ./start.sh apple-catalog-refresh
-./start.sh monitor --once --provider apple
+./start.sh apple
 ```
 
 向导依次选择地区、商品类别、型号、容量、颜色、适用运营商及自提门店，保存到私有 `config/apple.local.toml`。已有Apple配置保留备份，主配置和SMTP不改写。研究目标不会自动成为你的正式监控偏好。
 
 每个地区/类别的首次完整目录扫描静默建立基线；之后官网新增SKU才产生 `NEW_SKU`。手动添加监控目标不算新品。已确认缺货→新鲜有货，记录 `RESTOCK` 及 `PICKUP_AVAILABLE`；失败、被阻挡、限流、过期数据保持 `UNKNOWN`。预购、开放订购和配送尚无受支持的充分官方证据，保持未验证；Apple Watch组合配置仍属实验性。
 
-普通监控只记录机会并发送已配置邮件。显式加 `--prepare-checkout` 才允许已验证的适配器把新鲜官方机会送到 Edge，仍停在最终订单之前。实验商家的写操作关闭。
+普通监控只记录机会并发送已配置邮件。脚本显式使用 `--mode DRY_RUN --prepare-checkout` 才允许已验证适配器在邮件成功后把新鲜机会送到 Edge；当前自动准备仅限搬瓦工。实验商家写操作关闭。
+
+已知活动可以提前启动，例如 `autograb bandwagon --launch-at "2026-11-27T00:00:00-08:00"`。程序检查配置、睡眠等待、提前30秒检查就绪状态，在T0开始。`--pace BURST` 必须有明确活动时间，最长300秒，始终服从已保存的限流和 Retry-After。青龙部署、环境变量与 Cron 示例见[完整说明](docs/SCRIPT_MODE.md)。本轮没有配置任何真实后台计划任务。
 
 ## 实验性订单与付款入口
 
@@ -93,7 +104,7 @@ NodeSeek 目前为可选的只读 RSS 线索模块。帖子、关键词和购买
 不绕过 CAPTCHA、Cloudflare、排队、2FA或其他商家安全措施。不复制Cookie、不导出浏览器Profile、不伪装指纹、不用Playwright自动登录。永不自动最终付款；最终订单创建为独立受控的实验功能，当前真实证据不足仍阻止提交。不得注入夹具标记、开启旧工具或调整付款／余额设置来绕过核验。
 
 ```sh
-uv run --locked python -m playwright install chromium
+uv run --locked --all-extras python -m playwright install chromium
 ./test.sh
 node --test edge-extension/tests/*.test.mjs
 uv build

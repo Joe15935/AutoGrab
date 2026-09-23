@@ -1,10 +1,11 @@
 # AutoGrab
 
-Multi-provider stock monitor and checkout assistant for limited VPS plans and product launches.
+AutoGrab is a lightweight multi-provider opportunity monitor
+with an optional real-browser checkout assistant.
 
-[简体中文](README.zh-CN.md) · [Security](SECURITY.md) · [Research and verification](docs/MULTI_PROVIDER_STATUS.md) · [v0.4 closure report](docs/AUTOGRAB_PROVIDER_CLOSURE_REPORT.md) · [v0.5 Core report](docs/AUTOGRAB_V0_5_PAYMENT_READY_CORE_REPORT.md)
+[简体中文](README.zh-CN.md) · [Script Mode / QingLong](docs/SCRIPT_MODE.md) · [v0.6 report](docs/AUTOGRAB_V0_6_SCRIPT_MODE_REPORT.md) · [Security](SECURITY.md) · [Research and verification](docs/MULTI_PROVIDER_STATUS.md)
 
-**Experimental alpha. DRY_RUN by default. LIVE OFF. ARM OFF. REAL_ORDER_SMOKE_TEST_ARMED=false. No real orders or payments created.**
+**Experimental alpha. Script Mode defaults to MONITOR; checkout assistance remains DRY_RUN only. LIVE OFF. ARM OFF. REAL_ORDER_SMOKE_TEST_ARMED=false. No real orders or payments created.**
 
 AutoGrab keeps a catalogue baseline, detects subsequent product and stock changes, sends email, and uses a companion extension in your ordinary Microsoft Edge profile. A first scan never treats the whole catalogue as new stock. `SPECIAL`, `PROMO`, and annual billing are signals, not purchase triggers. Prices are recorded, never used as budget or value filters.
 
@@ -24,24 +25,31 @@ The v0.5 shared L6/L7 lifecycle and BWH/DMIT order adapters are **IMPLEMENTED �
 
 ## Quick start
 
-Requirements: Python 3.12–3.14, [uv](https://docs.astral.sh/uv/), and Node.js for extension tests. The native companion installer currently supports **macOS + Microsoft Edge**. Monitoring itself uses standard Python HTTP and SQLite. Existing Playwright is retained for offline DOM tests and historical regression helpers; it is not used to log in to merchants.
+Requirements: Python 3.12–3.14 and [uv](https://docs.astral.sh/uv/), or pip for an existing QingLong runtime. Public monitoring has **no required third-party runtime dependencies**. macOS users can open `安装 AutoGrab.command`; existing configuration is preserved. Optional `local` installs Mac Keychain support; `browser` retains Playwright for historical/offline regression only. Normal Edge assistance needs macOS + Microsoft Edge, not Playwright.
 
 ```sh
-uv sync --locked --python 3.12
-cp config/config.example.toml config/config.toml
-./start.sh baseline --provider all
+uv sync --locked --extra local --python 3.12
+./start.sh bandwagon
+./start.sh dmit --json
+./start.sh vmiss
+./start.sh vps
+./start.sh apple
 ./start.sh status
-./start.sh monitor --once --provider all
+./start.sh all --json
 ```
 
-Use `--provider bandwagon`, `dmit`, `vmiss`, `vps`, or `apple` to inspect one provider. All commands share the existing database. HTTP blocking pauses the affected provider/route. Budgeted VMISS and Apple public reads permit one probe after their persisted cooldown; other latched HTTP denials need an explicit restart after access is restored. An Edge intent is resumed in its existing tab/session only after fresh normal-page evidence.
+Use `autograb` directly after activating the environment. With no opportunity, a single run exits 0 silently; add `--json` for counts, timing and blocked-source details. Existing baselines are retained and initial scans are silent. The five Script commands share SQLite and persistent cooldown; HTTP blocking never starts an authenticated browser. `QUERY` reads a labelled saved observation with zero requests and writes; `MONITOR` refreshes it. [Full mode, timed launch, BURST and QingLong instructions](docs/SCRIPT_MODE.md) include environment variables, conservative Cron examples and the monitor-only boundary. No dashboard or server is required.
+
+Live v0.6 checks read BWH's 48 products and V.PS's 66 plans; an isolated configured Apple pickup target also succeeded. DMIT public HTTP and VMISS required human verification and stopped; their subsequent cooldown runs made zero requests. Prior signed-in L5 evidence remains distinct from current public HTTP access. A formal Apple target must still be configured.
+
+Legacy `baseline --provider NAME`, `probe`, and `monitor --once --provider NAME` remain available. Avoid overlapping controllers. An Edge intent is resumed in its existing tab/session only after fresh normal-page evidence.
 
 Runtime configuration is **TOML**. [config.example.yaml](config.example.yaml) is a readable configuration outline, not an alternative parser. Configure Apple using current official choices; no SKU entry is required:
 
 ```sh
 ./start.sh apple-configure
 ./start.sh apple-catalog-refresh
-./start.sh monitor --once --provider apple
+./start.sh apple
 ```
 
 The wizard selects region → official category → model → capacity → color → carrier (where applicable) → store(s), then writes a private `config/apple.local.toml` overlay. Existing Apple settings are backed up; the main config and SMTP settings remain intact. A research target is not installed automatically. The first complete scan of each region/category is silent; later newly observed official SKUs can emit `NEW_SKU`. Configuring an existing SKU is not a launch. Known sold-out → fresh available store inventory produces a `RESTOCK` event with `PICKUP_AVAILABLE` details. Errors and stale observations remain `UNKNOWN`. Preorder, order-open and delivery states remain unverified until a supported official source proves them. Apple Watch combinations remain experimental.
@@ -56,7 +64,7 @@ The wizard selects region → official category → model → capacity → color
 
 In your ordinary Edge profile, open `edge://extensions`, enable Developer mode, and load the project's `edge-extension` folder. Open AutoGrab's popup and connect. The stable extension ID is `eddoiocaihhammnclkhmmnafjhjilfnc`, derived from a **public** manifest key. The native host uses stdio, not a local TCP port or CDP.
 
-Explicit dry runs are labelled tests, not invented stock opportunities. Experimental providers open a read-only official page. Their mutation adapters remain disabled until separately verified. `monitor --prepare-checkout` can queue supported, freshly rechecked opportunities to Edge and still stops before final order. Without this flag, monitoring records changes and sends configured email only.
+Explicit dry runs are labelled tests, not invented stock opportunities. Experimental providers open a read-only official page. Their mutation adapters remain disabled until separately verified. `bandwagon --mode DRY_RUN --prepare-checkout` sends a real detected opportunity email before optionally queuing supported preparation; it still stops before final order. Without that flag, monitoring records changes and sends configured email only. QingLong wrappers reject all Edge preparation.
 
 On login or challenge, use the ordinary site UI yourself, then resume the **same** intent:
 
@@ -99,7 +107,7 @@ AutoGrab does not bypass CAPTCHA, Cloudflare challenges, waiting rooms, 2FA, or 
 ## Development
 
 ```sh
-uv run --locked python -m playwright install chromium
+uv run --locked --all-extras python -m playwright install chromium
 ./test.sh
 node --test edge-extension/tests/*.test.mjs
 uv build

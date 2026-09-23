@@ -7,8 +7,6 @@ from pathlib import Path
 from uuid import uuid4
 from urllib.parse import urlsplit, parse_qs
 
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
-
 from autograb.core.errors import AutoGrabError
 from autograb.core.lock import ProcessLock
 from .safety import SafetyPolicy, public_url
@@ -28,6 +26,7 @@ class BrowserManager:
         self._lock = ProcessLock(self.config.root / "profiles/bandwagon/.autograb.lock")
         self._lock.__enter__()
         try:
+            from playwright.async_api import async_playwright
             self.playwright = await async_playwright().start()
             self.context = await self.playwright.chromium.launch_persistent_context(
                 str(self.config.root / "profiles/bandwagon"), headless=False,
@@ -70,6 +69,7 @@ class BrowserManager:
             raise AutoGrabError("NETWORK_ERROR")
 
     async def navigate(self, page, url):
+        from playwright.async_api import TimeoutError as PlaywrightTimeout
         self.last_page = page
         try:
             response = await page.goto(url, wait_until="domcontentloaded")

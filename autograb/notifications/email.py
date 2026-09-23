@@ -101,6 +101,8 @@ class SMTPConfig:
                               "recipient": "AUTOGRAB_EMAIL_TO"}.get(key)
             if autograb_alias:
                 fallback = environment.get(autograb_alias, fallback)
+            if key == "recipient":
+                fallback = environment.get("AUTOGRAB_EMAIL", fallback)
             return environment.get(environment_key, fallback)
 
         mode = str(read("tls_mode", "SMTP_TLS_MODE", "ssl")).lower()

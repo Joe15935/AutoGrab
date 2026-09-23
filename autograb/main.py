@@ -11,7 +11,6 @@ from autograb.core.config import Config
 from autograb.core.errors import AutoGrabError
 from autograb.core.events import EventLog
 from autograb.core.lock import ProcessLock
-from autograb.core.runner import Runner
 from autograb.core.state import State, transition
 from autograb.notifications.email import EmailNotifier, SMTPConfig
 from autograb.providers.bandwagon import BandwagonHostProvider, CATALOG_PAGE
@@ -21,8 +20,9 @@ from autograb.edge.protocol import ProtocolError
 
 
 def parser():
-    p = argparse.ArgumentParser(description="AutoGrab — multi-provider / default DRY RUN + DISARMED")
-    p.add_argument("--root", type=Path, default=Path.cwd(), help="Project data/config directory")
+    p = argparse.ArgumentParser(description="AutoGrab — lightweight monitoring / LIVE OFF + DISARMED",
+        epilog="Script commands: autograb bandwagon|dmit|vmiss|vps|apple|all [--mode MONITOR|QUERY|DRY_RUN] [--json]. Use autograb bandwagon --help for launch options.")
+    p.add_argument("--root", type=Path, default=Path(os.environ.get("AUTOGRAB_ROOT", Path.cwd())), help="Project data/config directory")
     commands = p.add_subparsers(dest="command", required=True)
     for name in ("baseline", "probe", "status", "history", "email-test", "open-session"):
         command = commands.add_parser(name)
@@ -63,12 +63,12 @@ async def keep_open(browser, log, reason):
 
 
 async def run(args, config):
-    browser = BrowserManager(config)
     log = EventLog(config.root / "logs/events.jsonl")
     notifier = EmailNotifier(load_setup(config.root, base=config.smtp))
     with ProcessLock(config.root / "data/autograb.lock"), Store(config.root / "data/autograb.sqlite3") as store:
         recovered = store.recover_interrupted()
-        log.write("START", version="0.5.0a0", database="OK", email="CONFIGURED" if notifier.configured else "NOT_CONFIGURED", recovered_events=recovered)
+        from autograb import __version__
+        log.write("START", version=__version__, database="OK", email="CONFIGURED" if notifier.configured else "NOT_CONFIGURED", recovered_events=recovered)
         if args.command in {"status", "history"}:
             print(json.dumps(store.summary() if args.command == "status" else store.list_events(), ensure_ascii=False, indent=2))
             return 0
@@ -76,6 +76,8 @@ async def run(args, config):
             result = await notifier.send_test()
             log.write("EMAIL_TEST", **asdict(result))
             return 0 if result.status == "SMTP_ACCEPTED" else 2
+        from autograb.core.runner import Runner
+        browser = BrowserManager(config)
         provider = BandwagonHostProvider(browser, log)
         runner = Runner(store, provider, notifier, log)
         run_id = store.start_run(args.command)
@@ -179,6 +181,11 @@ async def run(args, config):
 
 
 def main():
+    # Script commands bypass the legacy parser and optional runtime imports.
+    from autograb.script_cli import dispatch
+    script_result = dispatch(sys.argv[1:])
+    if script_result is not None:
+        return script_result
     os.umask(0o077)
     args = parser().parse_args()
     try:

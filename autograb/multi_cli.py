@@ -16,7 +16,7 @@ from autograb.notifications.email import EmailNotifier
 from autograb.notifications.setup import load_setup
 
 
-async def process_opportunity(store, provider, event, notifier, *, prepare_checkout=False, data_dir=None):
+async def process_opportunity(store, provider, event, notifier, *, prepare_checkout=False, data_dir=None, notify_first=False):
     """Claim once; recheck official stock before any checkout preparation."""
     event = store.get_event(event["id"])
     if event is None or provider.provider_name != event["provider"]:
@@ -30,6 +30,17 @@ async def process_opportunity(store, provider, event, notifier, *, prepare_check
     from autograb.core.models import Product
     observed = Product.from_dict(event["product"])
     status = "OPPORTUNITY_RECORDED"
+    notification = None
+    async def send_notice():
+        store.update_event(event["id"], "NOTIFYING", {"checkout_status": status})
+        result = await notifier.send_event(observed, event, {}, {"status": status})
+        store.record_notification(event["id"], result.status, result.error_code or "")
+        return result
+    if notify_first:
+        notification = await send_notice()
+        if notification.status != "SMTP_ACCEPTED":
+            store.update_event(event["id"], "OPPORTUNITY_RECORDED", {"notification": notification.status})
+            return notification.status
     if details.get("execution_candidate") and prepare_checkout:
         def check_controls():
             directory = data_dir if data_dir is not None else Path(store.path).parent if store.path != ":memory:" else None
@@ -87,9 +98,7 @@ async def process_opportunity(store, provider, event, notifier, *, prepare_check
             code = getattr(error, "code", "EDGE_REVIEW_REQUIRED")
             status = code if isinstance(code, str) and code.isascii() and code.replace("_", "").isalnum() else "EDGE_REVIEW_REQUIRED"
     # Persist notification dispatch before SMTP; an uncertain send is not retried.
-    store.update_event(event["id"], "NOTIFYING", {"checkout_status": status})
-    result = await notifier.send_event(observed, event, {}, {"status": status})
-    store.record_notification(event["id"], result.status, result.error_code or "")
+    result = notification or await send_notice()
     store.update_event(event["id"], "OPPORTUNITY_NOTIFIED" if result.status == "SMTP_ACCEPTED" else "OPPORTUNITY_RECORDED",
                        {"notification": result.status, "checkout_status": status})
     return status

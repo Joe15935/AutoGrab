@@ -5,7 +5,6 @@ from urllib.request import Request, build_opener, HTTPRedirectHandler
 from urllib.parse import parse_qs, urlsplit
 
 from autograb.browser.safety import is_observed_add
-from autograb.browser.manager import write_marker
 from autograb.core.errors import AutoGrabError
 from .catalog import parse_catalog, CatalogError
 
@@ -29,11 +28,15 @@ class BandwagonHostProvider:
         self.last_products = []
 
     def _http(self):
+        from autograb.core.http_metrics import request_started
+        request_started()
+        self.last_retry_after = None
         request = Request(ENDPOINT, headers={"Accept": "application/json", "User-Agent": "AutoGrab/0.1 (DRY_RUN inventory monitor)", "Referer": CATALOG_PAGE})
         try:
             with build_opener(NoRedirect).open(request, timeout=15) as response:
                 return response.status, json.loads(response.read(4_000_001))
         except HTTPError as error:
+            self.last_retry_after = error.headers.get("Retry-After")
             return error.code, None
         except Exception:
             return None, None
@@ -162,6 +165,7 @@ class BandwagonHostProvider:
                 raise AutoGrabError("SELECTOR_CHANGED")
 
     async def prepare_cart(self, product):
+        from autograb.browser.manager import write_marker
         page = self.browser.page
         marker_path = self.browser.config.root / "profiles/bandwagon/.cart-action.json"
         marker = None

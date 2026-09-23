@@ -4,18 +4,23 @@ requires-python = ">=3.12, <3.15"
 
 [[package]]
 name = "autograb"
-version = "0.5.0a0"
+version = "0.6.0a0"
 source = { editable = "." }
-dependencies = [
-    { name = "keyring" },
+
+[package.optional-dependencies]
+browser = [
     { name = "playwright" },
+]
+local = [
+    { name = "keyring" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "keyring", specifier = ">=25,<27" },
-    { name = "playwright", specifier = ">=1.58,<2" },
+    { name = "keyring", marker = "extra == 'local'", specifier = ">=25,<27" },
+    { name = "playwright", marker = "extra == 'browser'", specifier = ">=1.58,<2" },
 ]
+provides-extras = ["local", "browser"]
 
 [[package]]
 name = "cffi"

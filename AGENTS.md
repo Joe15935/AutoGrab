@@ -41,7 +41,11 @@
 - Run relevant tests after changes; run ./test.sh, Node extension tests and
   uv build before a release. Scan final source, artifacts and full public Git
   history including commit metadata. Do not publish private development history.
-- Public publishing requires explicit user authorization. For this payment-ready
-  Core sprint, public docs/main synchronization and a justified v0.5.0-alpha
-  release are explicitly authorized. This grants no real-order smoke test and
+- Public publishing requires explicit user authorization. For this Script Mode
+  sprint, public docs/main synchronization and v0.6.0-alpha are explicitly
+  authorized. This grants no real-order smoke test and
   no general permission for future releases. Preserve historical phase reports.
+- Script commands stay one-shot and dependency-free; QingLong wrappers permit
+  MONITOR/QUERY only. QUERY reads a labelled saved projection without network,
+  SQLite access or file writes. Projection files are disposable; never use them
+  to authorize a request, an opportunity, Edge action or an order.
